@@ -10,56 +10,69 @@ from collections import deque
 
 # ==================== AGGRESIVE OPUS FIX ====================
 print("=" * 60)
-print("INITIALIZING DISCORD MUSIC BOT - OPUS FIX VERSION")
+print("INITIALIZING DISCORD MUSIC BOT - RAILWAY FIX")
 print("=" * 60)
 
-# Force install opus jika tidak ada
+# Check if we're on Railway
+IS_RAILWAY = os.path.exists('/app') or os.path.exists('/railway')
+
+print(f"Running on Railway: {IS_RAILWAY}")
 print("Checking Opus library...")
+
+# Force opus load with different methods
 if not discord.opus.is_loaded():
-    print("WARNING: Opus not loaded. Force installing...")
+    print("Opus not loaded. Attempting to load...")
     
-    # Try aggressive installation for Railway
-    try:
-        # Update apt and install opus
-        print("Installing opus via apt-get...")
-        subprocess.run(['apt-get', 'update'], check=False, capture_output=True)
-        result = subprocess.run(
-            ['apt-get', 'install', '-y', 'libopus-dev', 'libopus0', 'libsodium-dev', 'ffmpeg'],
-            check=False,
-            capture_output=True,
-            text=True
-        )
-        print(f"Install result: {result.returncode}")
-        if result.stdout:
-            print(f"stdout: {result.stdout[:500]}")
-        
-        # Set OPUS_LIB_PATH environment variable
-        os.environ['OPUS_LIB_PATH'] = '/usr/lib/x86_64-linux-gnu/libopus.so.0'
-        
-        # Try to load opus
-        discord.opus.load_opus('opus')
-        
-        if not discord.opus.is_loaded():
-            # Try specific path
-            opus_paths = [
-                '/usr/lib/x86_64-linux-gnu/libopus.so.0',
-                '/usr/lib/libopus.so.0',
-                'libopus.so.0',
-                'opus',
-                '/app/.apt/usr/lib/x86_64-linux-gnu/libopus.so.0',
-            ]
-            
-            for path in opus_paths:
-                try:
-                    discord.opus.load_opus(path)
-                    if discord.opus.is_loaded():
-                        print(f"SUCCESS: Loaded opus from {path}")
-                        break
-                except Exception as e:
-                    print(f"Failed to load from {path}: {e}")
-        
-    except Exception as e:
-        print(f"Install error: {e}")
+    # Try different paths specifically for Railway
+    opus_paths = [
+        # Railway paths
+        '/usr/lib/x86_64-linux-gnu/libopus.so.0',
+        '/usr/lib/libopus.so.0',
+        # Standard paths
+        'libopus.so.0',
+        'opus',
+        # Alternative paths
+        '/lib/x86_64-linux-gnu/libopus.so.0',
+        '/usr/local/lib/libopus.so.0',
+    ]
+    
+    loaded = False
+    for path in opus_paths:
+        try:
+            print(f"Trying to load opus from: {path}")
+            discord.opus.load_opus(path)
+            if discord.opus.is_loaded():
+                print(f"SUCCESS: Loaded opus from {path}")
+                loaded = True
+                break
+        except Exception as e:
+            print(f"Failed to load from {path}: {str(e)[:100]}")
+    
+    if not loaded and IS_RAILWAY:
+        print("Attempting to locate opus library...")
+        # Try to find opus library
+        try:
+            find_result = subprocess.run(
+                ['find', '/', '-name', 'libopus.so*', '-type', 'f'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if find_result.stdout:
+                print("Found opus libraries:")
+                for line in find_result.stdout.strip().split('\n'):
+                    if line:
+                        print(f"  - {line}")
+                        try:
+                            discord.opus.load_opus(line)
+                            if discord.opus.is_loaded():
+                                print(f"SUCCESS: Loaded from found path: {line}")
+                                loaded = True
+                                break
+                        except:
+                            continue
+        except:
+            pass
 
 print(f"Opus loaded status: {discord.opus.is_loaded()}")
 print("=" * 60)
@@ -76,7 +89,6 @@ class MusicBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
         
     async def setup_hook(self):
-        # Remove default help command
         self.remove_command('help')
 
 bot = MusicBot()
@@ -99,10 +111,6 @@ YTDL_OPTIONS = {
     'source_address': '0.0.0.0',
     'cookiefile': None,
     'no_check_certificate': True,
-    'geo_bypass': True,
-    'extractor_retries': 3,
-    'socket_timeout': 30,
-    'noprogress': True,
 }
 
 # ==================== FFMPEG OPTIONS ====================
@@ -127,22 +135,17 @@ class YTDLSource(discord.PCMVolumeTransformer):
     async def from_url(cls, url, *, loop=None):
         loop = loop or asyncio.get_event_loop()
         
-        try:
-            data = await loop.run_in_executor(
-                None, 
-                lambda: ytdl.extract_info(url, download=False)
-            )
-            
-            if 'entries' in data:
-                data = data['entries'][0]
-            
-            audio_url = data['url']
-            
-            return cls(discord.FFmpegPCMAudio(audio_url, **FFMPEG_OPTIONS), data=data)
-            
-        except Exception as e:
-            print(f"Error in YTDLSource.from_url: {e}")
-            raise
+        data = await loop.run_in_executor(
+            None, 
+            lambda: ytdl.extract_info(url, download=False)
+        )
+        
+        if 'entries' in data:
+            data = data['entries'][0]
+        
+        audio_url = data['url']
+        
+        return cls(discord.FFmpegPCMAudio(audio_url, **FFMPEG_OPTIONS), data=data)
 
 # ==================== HELPER FUNCTIONS ====================
 def get_queue(guild_id):
@@ -164,7 +167,6 @@ async def play_next(ctx):
     if not voice_client or not voice_client.is_connected():
         return
     
-    # Get next song
     song = None
     
     if queue_data['loop'] and queue_data['current']:
@@ -217,7 +219,6 @@ async def play_next(ctx):
         
     except Exception as e:
         print(f"Error playing song: {e}")
-        await ctx.channel.send(f"Error memutar lagu: {str(e)[:100]}")
         await asyncio.sleep(1)
         await play_next(ctx)
 
@@ -273,16 +274,12 @@ async def play(interaction: discord.Interaction, query: str):
     
     if not voice_client:
         try:
-            # IMPORTANT: Use different approach for Railway
             voice_client = await voice_channel.connect(
                 timeout=30.0,
                 reconnect=True,
                 self_deaf=True
             )
             print(f"Connected to voice channel: {voice_channel.name}")
-        except asyncio.TimeoutError:
-            await interaction.followup.send("Timeout saat connect ke voice channel")
-            return
         except Exception as e:
             await interaction.followup.send(f"Gagal connect ke voice channel: {str(e)}")
             return
@@ -295,8 +292,6 @@ async def play(interaction: discord.Interaction, query: str):
             return
     
     try:
-        print(f"Searching for: {query}")
-        
         if not query.startswith(('http://', 'https://', 'www.')):
             search_query = f"ytsearch:{query}"
         else:
@@ -375,8 +370,6 @@ async def play(interaction: discord.Interaction, query: str):
             
             await interaction.followup.send(embed=embed)
     
-    except yt_dlp.utils.DownloadError as e:
-        await interaction.followup.send(f"Error download: {str(e)[:200]}")
     except Exception as e:
         print(f"Unexpected error in play: {e}")
         await interaction.followup.send(f"Terjadi error: {str(e)[:200]}")
@@ -461,7 +454,7 @@ async def queue(interaction: discord.Interaction):
     
     if queue_data['queue']:
         queue_list = []
-        for i, song in enumerate(list(queue_data['queue'])[:15]):
+        for i, song in enumerate(list(queue_data['queue'])[:10]):
             time_str = ""
             if song.get('duration'):
                 minutes = song['duration'] // 60
@@ -473,18 +466,12 @@ async def queue(interaction: discord.Interaction):
         
         queue_text = "\n".join(queue_list)
         
-        if len(queue_data['queue']) > 15:
-            queue_text += f"\n\n...dan {len(queue_data['queue']) - 15} lagu lainnya"
+        if len(queue_data['queue']) > 10:
+            queue_text += f"\n\n...dan {len(queue_data['queue']) - 10} lagu lainnya"
         
         embed.add_field(
             name=f"Up Next ({len(queue_data['queue'])} songs)",
             value=queue_text,
-            inline=False
-        )
-    else:
-        embed.add_field(
-            name="Up Next",
-            value="Tidak ada lagu dalam queue",
             inline=False
         )
     
@@ -606,8 +593,6 @@ if TOKEN:
     print("=" * 60)
     print(f"Python: {sys.version}")
     print(f"Discord.py: {discord.__version__}")
-    print(f"YT-DLP: {yt_dlp.__version__}")
-    print(f"Opus: {'Loaded' if discord.opus.is_loaded() else 'Not loaded'}")
     print("=" * 60 + "\n")
     
     try:
