@@ -3,311 +3,232 @@ from discord.ext import commands
 import os
 import subprocess
 import asyncio
-import yt_dlp
+import youtube_dl
 from collections import deque
 
 print("=" * 60)
-print("DISCORD MUSIC BOT - WITH PYNACL FIX")
+print("DISCORD MUSIC BOT v1.7.3")
 print("=" * 60)
 
-# Check system
-print("Checking system...")
+# Check FFmpeg
 result = subprocess.run(['which', 'ffmpeg'], capture_output=True, text=True)
-print(f"FFmpeg: {result.stdout.strip() or 'NOT FOUND'}")
-
-# Check PyNaCl
-try:
-    import nacl
-    print(f"PyNaCl version: {nacl.__version__}")
-except:
-    print("PyNaCl not imported properly")
+print(f"FFmpeg: {result.stdout.strip()}")
 
 intents = discord.Intents.default()
 intents.message_content = True
-intents.voice_states = True
 
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 # Music queue
-music_queues = {}
+queues = {}
 
-# YTDL Setup
-YTDL_OPTIONS = {
+# YouTube DL options
+ytdl_format_options = {
     'format': 'bestaudio/best',
+    'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
+    'restrictfilenames': True,
+    'noplaylist': True,
+    'nocheckcertificate': True,
+    'ignoreerrors': False,
+    'logtostderr': False,
     'quiet': True,
     'no_warnings': True,
-    'default_search': 'ytsearch',
-    'noplaylist': True,
-    'extract_flat': False,
+    'default_search': 'auto',
+    'source_address': '0.0.0.0',
 }
 
-FFMPEG_OPTIONS = {
+ffmpeg_options = {
     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-    'options': '-vn -filter:a "volume=0.5"'
+    'options': '-vn'
 }
 
-ytdl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
+ytdl = youtube_dl.YoutubeDL(ytdl_format_options)
+
+class YTDLSource(discord.PCMVolumeTransformer):
+    def __init__(self, source, *, data, volume=0.5):
+        super().__init__(source, volume)
+        self.data = data
+        self.title = data.get('title')
+        self.url = data.get('url')
+
+    @classmethod
+    async def from_url(cls, url, *, loop=None, stream=False):
+        loop = loop or asyncio.get_event_loop()
+        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=not stream))
+        
+        if 'entries' in data:
+            data = data['entries'][0]
+        
+        filename = data['url'] if stream else ytdl.prepare_filename(data)
+        return cls(discord.FFmpegPCMAudio(filename, **ffmpeg_options), data=data)
+
+def get_queue(guild_id):
+    if guild_id not in queues:
+        queues[guild_id] = deque()
+    return queues[guild_id]
 
 @bot.event
 async def on_ready():
-    print(f"Bot {bot.user} online!")
-    print(f"Guilds: {len(bot.guilds)}")
-    
-    # Sync slash commands
-    try:
-        synced = await bot.tree.sync()
-        print(f"Synced {len(synced)} slash commands")
-    except Exception as e:
-        print(f"Sync error: {e}")
-    
+    print(f'{bot.user} has connected to Discord!')
+    print(f'Connected to {len(bot.guilds)} guild(s)')
     await bot.change_presence(activity=discord.Activity(
-        type=discord.ActivityType.listening, 
-        name="/play | !play"
+        type=discord.ActivityType.listening,
+        name="!play music"
     ))
 
-def get_queue(guild_id):
-    if guild_id not in music_queues:
-        music_queues[guild_id] = deque()
-    return music_queues[guild_id]
-
 async def play_next(ctx):
-    """Play next song in queue"""
-    if not ctx.voice_client or not ctx.voice_client.is_connected():
-        return
-    
+    voice_client = ctx.voice_client
     queue = get_queue(ctx.guild.id)
     
-    if not queue:
+    if not voice_client or not queue:
         return
     
     try:
-        # Get next song
-        song_url = queue[0]
-        
-        # Get audio info
-        info = ytdl.extract_info(song_url, download=False)
-        if 'entries' in info:
-            info = info['entries'][0]
-        
-        audio_url = info['url']
-        title = info.get('title', 'Unknown')
-        
-        # Play audio
-        source = discord.FFmpegPCMAudio(audio_url, **FFMPEG_OPTIONS)
+        url = queue[0]
+        player = await YTDLSource.from_url(url, loop=bot.loop, stream=True)
         
         def after_playing(error):
             if error:
-                print(f"Playback error: {error}")
+                print(f'Player error: {error}')
             
-            # Remove from queue and play next
-            queue = get_queue(ctx.guild.id)
+            # Remove from queue
             if queue:
                 queue.popleft()
             
             # Play next if still connected
-            if ctx.voice_client and ctx.voice_client.is_connected():
+            if voice_client.is_connected() and queue:
                 asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop)
         
-        ctx.voice_client.play(source, after=after_playing)
-        
-        # Send playing message
-        channel = ctx.channel
-        await channel.send(f"Now playing: **{title}**")
+        voice_client.play(player, after=after_playing)
+        await ctx.send(f'Now playing: **{player.title}**')
         
     except Exception as e:
-        print(f"Error in play_next: {e}")
-        # Remove failed song and try next
-        queue = get_queue(ctx.guild.id)
+        print(f'Error in play_next: {e}')
         if queue:
             queue.popleft()
         await play_next(ctx)
 
-# ========== HYBRID COMMANDS ==========
-
-@bot.hybrid_command(name="play", description="Play music from YouTube")
-async def play(ctx, *, query: str):
-    """Play music from YouTube"""
-    await ctx.defer()
-    
-    if not ctx.author.voice:
-        await ctx.send("Join voice channel first!", ephemeral=True)
-        return
-    
-    try:
-        # Connect to voice
-        if not ctx.voice_client:
-            vc = await ctx.author.voice.channel.connect()
-            print(f"Connected to {vc.channel.name}")
-        elif ctx.voice_client.channel != ctx.author.voice.channel:
-            vc = await ctx.voice_client.move_to(ctx.author.voice.channel)
-            print(f"Moved to {vc.channel.name}")
-        else:
-            vc = ctx.voice_client
-        
-        # Get audio info
-        print(f"Searching for: {query}")
-        info = ytdl.extract_info(query, download=False)
-        
-        if 'entries' in info:
-            info = info['entries'][0]
-        
-        audio_url = info['url']
-        title = info.get('title', 'Unknown')
-        webpage_url = info.get('webpage_url', audio_url)
-        
-        # Add to queue
-        queue = get_queue(ctx.guild.id)
-        queue.append(webpage_url)
-        
-        # If not playing, start playback
-        if not vc.is_playing() and not vc.is_paused():
-            await play_next(ctx)
-            await ctx.send(f"Now playing: **{title}**")
-        else:
-            await ctx.send(f"Added to queue: **{title}** (Position: {len(queue)})")
-        
-    except Exception as e:
-        print(f"Error in play command: {e}")
-        await ctx.send(f"Error: {str(e)[:150]}")
-
-@bot.hybrid_command(name="join", description="Join voice channel")
+@bot.command(name='join')
 async def join(ctx):
-    """Join your voice channel"""
     if not ctx.author.voice:
-        await ctx.send("You're not in a voice channel!", ephemeral=True)
+        await ctx.send("You are not connected to a voice channel.")
         return
     
-    try:
-        vc = await ctx.author.voice.channel.connect()
-        await ctx.send(f"Joined {vc.channel.name}")
-    except Exception as e:
-        await ctx.send(f"Error: {str(e)}")
+    channel = ctx.author.voice.channel
+    await channel.connect()
+    await ctx.send(f'Joined {channel.name}')
 
-@bot.hybrid_command(name="leave", description="Leave voice channel")
-async def leave(ctx):
-    """Leave voice channel"""
-    if ctx.voice_client:
-        # Clear queue
-        if ctx.guild.id in music_queues:
-            music_queues[ctx.guild.id].clear()
-        
-        await ctx.voice_client.disconnect()
-        await ctx.send("Left voice channel")
+@bot.command(name='play')
+async def play(ctx, *, url):
+    if not ctx.author.voice:
+        await ctx.send("You are not connected to a voice channel.")
+        return
+    
+    voice_client = ctx.voice_client
+    
+    # Connect if not connected
+    if not voice_client:
+        try:
+            voice_client = await ctx.author.voice.channel.connect()
+        except:
+            await ctx.send("Could not connect to voice channel.")
+            return
+    
+    # Add to queue
+    queue = get_queue(ctx.guild.id)
+    queue.append(url)
+    
+    # If not playing, start playback
+    if not voice_client.is_playing():
+        await play_next(ctx)
     else:
-        await ctx.send("Not in a voice channel", ephemeral=True)
+        await ctx.send(f'Added to queue: {url}')
 
-@bot.hybrid_command(name="pause", description="Pause current music")
+@bot.command(name='pause')
 async def pause(ctx):
-    """Pause music"""
-    if ctx.voice_client and ctx.voice_client.is_playing():
-        ctx.voice_client.pause()
-        await ctx.send("Music paused")
+    voice_client = ctx.voice_client
+    if voice_client and voice_client.is_playing():
+        voice_client.pause()
+        await ctx.send('Paused ⏸️')
     else:
-        await ctx.send("No music playing", ephemeral=True)
+        await ctx.send('Not playing any music.')
 
-@bot.hybrid_command(name="resume", description="Resume paused music")
+@bot.command(name='resume')
 async def resume(ctx):
-    """Resume music"""
-    if ctx.voice_client and ctx.voice_client.is_paused():
-        ctx.voice_client.resume()
-        await ctx.send("Music resumed")
+    voice_client = ctx.voice_client
+    if voice_client and voice_client.is_paused():
+        voice_client.resume()
+        await ctx.send('Resumed ▶️')
     else:
-        await ctx.send("Music not paused", ephemeral=True)
+        await ctx.send('Music is not paused.')
 
-@bot.hybrid_command(name="skip", description="Skip current song")
-async def skip(ctx):
-    """Skip song"""
-    if ctx.voice_client and ctx.voice_client.is_playing():
-        ctx.voice_client.stop()
-        await ctx.send("Skipped")
-    else:
-        await ctx.send("No music playing", ephemeral=True)
-
-@bot.hybrid_command(name="stop", description="Stop music and clear queue")
+@bot.command(name='stop')
 async def stop(ctx):
-    """Stop music"""
-    if ctx.voice_client:
+    voice_client = ctx.voice_client
+    if voice_client:
         # Clear queue
-        if ctx.guild.id in music_queues:
-            music_queues[ctx.guild.id].clear()
+        if ctx.guild.id in queues:
+            queues[ctx.guild.id].clear()
         
-        if ctx.voice_client.is_playing() or ctx.voice_client.is_paused():
-            ctx.voice_client.stop()
-        
-        await ctx.send("Music stopped and queue cleared")
+        voice_client.stop()
+        await ctx.send('Stopped ⏹️')
     else:
-        await ctx.send("Not in voice channel", ephemeral=True)
+        await ctx.send('Not in a voice channel.')
 
-@bot.hybrid_command(name="queue", description="Show music queue")
+@bot.command(name='skip')
+async def skip(ctx):
+    voice_client = ctx.voice_client
+    if voice_client and voice_client.is_playing():
+        voice_client.stop()
+        await ctx.send('Skipped ⏭️')
+    else:
+        await ctx.send('Not playing any music.')
+
+@bot.command(name='queue')
 async def queue_cmd(ctx):
-    """Show queue"""
     queue = get_queue(ctx.guild.id)
     
     if not queue:
-        await ctx.send("Queue is empty")
+        await ctx.send('Queue is empty.')
         return
     
-    message = "**Music Queue:**\n"
-    for i, song_url in enumerate(list(queue)[:10], 1):
-        try:
-            info = ytdl.extract_info(song_url, download=False, process=False)
-            if 'entries' in info:
-                info = info['entries'][0]
-            title = info.get('title', 'Unknown')
-            message += f"{i}. {title}\n"
-        except:
-            message += f"{i}. Unknown\n"
+    message = '**Music Queue:**\n'
+    for i, url in enumerate(list(queue)[:10], 1):
+        message += f'{i}. {url}\n'
     
     if len(queue) > 10:
-        message += f"\n...and {len(queue) - 10} more"
+        message += f'\n...and {len(queue) - 10} more'
     
     await ctx.send(message)
 
-@bot.hybrid_command(name="nowplaying", description="Show currently playing song")
-async def nowplaying(ctx):
-    """Show now playing"""
-    if ctx.voice_client and ctx.voice_client.is_playing():
-        queue = get_queue(ctx.guild.id)
-        if queue:
-            try:
-                song_url = queue[0]
-                info = ytdl.extract_info(song_url, download=False, process=False)
-                if 'entries' in info:
-                    info = info['entries'][0]
-                title = info.get('title', 'Unknown')
-                await ctx.send(f"Now playing: **{title}**")
-            except:
-                await ctx.send("Now playing: Unknown")
-        else:
-            await ctx.send("Nothing is playing")
+@bot.command(name='leave')
+async def leave(ctx):
+    voice_client = ctx.voice_client
+    if voice_client:
+        # Clear queue
+        if ctx.guild.id in queues:
+            queues[ctx.guild.id].clear()
+        
+        await voice_client.disconnect()
+        await ctx.send('Left voice channel 👋')
     else:
-        await ctx.send("No music is playing", ephemeral=True)
+        await ctx.send('Not in a voice channel.')
 
-@bot.hybrid_command(name="ping", description="Check bot latency")
+@bot.command(name='ping')
 async def ping(ctx):
-    """Check latency"""
     latency = round(bot.latency * 1000)
-    await ctx.send(f"Pong! {latency}ms")
+    await ctx.send(f'Pong! {latency}ms')
 
-# ========== NORMAL PREFIX COMMANDS ==========
-
-@bot.command()
+@bot.command(name='test')
 async def test(ctx):
-    """Test command"""
-    await ctx.send("Bot is working!")
+    await ctx.send('Bot is working! ✅')
 
-@bot.command()
-async def say(ctx, *, message: str):
-    """Repeat message"""
-    await ctx.send(message)
-
-# ========== RUN BOT ==========
-
-TOKEN = os.getenv("DISCORD_TOKEN")
+# Run bot
+TOKEN = os.getenv('DISCORD_TOKEN')
 
 if TOKEN:
     print(f"Token found: {TOKEN[:20]}...")
     print("Starting bot...")
     bot.run(TOKEN)
 else:
-    print("ERROR: No token found!")
+    print("ERROR: No DISCORD_TOKEN found!")
