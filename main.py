@@ -7,17 +7,17 @@ import youtube_dl
 from collections import deque
 
 print("=" * 60)
-print("DISCORD MUSIC BOT v1.7.3")
+print("DISCORD MUSIC BOT v1.7.3 - FIXED")
 print("=" * 60)
 
 # Check FFmpeg
-result = subprocess.run(['which', 'ffmpeg'], capture_output=True, text=True)
-print(f"FFmpeg: {result.stdout.strip()}")
+try:
+    result = subprocess.run(['which', 'ffmpeg'], capture_output=True, text=True)
+    print(f"FFmpeg: {result.stdout.strip()}")
+except:
+    print("FFmpeg check failed")
 
-intents = discord.Intents.default()
-intents.message_content = True
-
-bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
+bot = commands.Bot(command_prefix="!", help_command=None)
 
 # Music queue
 queues = {}
@@ -69,12 +69,12 @@ def get_queue(guild_id):
 
 @bot.event
 async def on_ready():
-    print(f'{bot.user} has connected to Discord!')
+    print(f'{bot.user.name} has connected to Discord!')
+    print(f'Bot ID: {bot.user.id}')
     print(f'Connected to {len(bot.guilds)} guild(s)')
-    await bot.change_presence(activity=discord.Activity(
-        type=discord.ActivityType.listening,
-        name="!play music"
-    ))
+    print('=' * 60)
+    
+    await bot.change_presence(activity=discord.Game(name="!play | Music Bot"))
 
 async def play_next(ctx):
     voice_client = ctx.voice_client
@@ -108,8 +108,9 @@ async def play_next(ctx):
             queue.popleft()
         await play_next(ctx)
 
-@bot.command(name='join')
+@bot.command()
 async def join(ctx):
+    """Join your voice channel"""
     if not ctx.author.voice:
         await ctx.send("You are not connected to a voice channel.")
         return
@@ -118,8 +119,9 @@ async def join(ctx):
     await channel.connect()
     await ctx.send(f'Joined {channel.name}')
 
-@bot.command(name='play')
+@bot.command()
 async def play(ctx, *, url):
+    """Play music from YouTube"""
     if not ctx.author.voice:
         await ctx.send("You are not connected to a voice channel.")
         return
@@ -130,79 +132,112 @@ async def play(ctx, *, url):
     if not voice_client:
         try:
             voice_client = await ctx.author.voice.channel.connect()
-        except:
-            await ctx.send("Could not connect to voice channel.")
+        except Exception as e:
+            await ctx.send(f"Could not connect to voice channel: {e}")
             return
     
-    # Add to queue
-    queue = get_queue(ctx.guild.id)
-    queue.append(url)
-    
-    # If not playing, start playback
-    if not voice_client.is_playing():
-        await play_next(ctx)
-    else:
-        await ctx.send(f'Added to queue: {url}')
+    try:
+        # Add to queue
+        queue = get_queue(ctx.guild.id)
+        
+        # If URL doesn't start with http, treat as search
+        if not url.startswith(('http://', 'https://')):
+            url = f"ytsearch:{url}"
+        
+        queue.append(url)
+        
+        # If not playing, start playback
+        if not voice_client.is_playing():
+            await play_next(ctx)
+        else:
+            # Try to get title
+            try:
+                data = await bot.loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=False))
+                if 'entries' in data:
+                    data = data['entries'][0]
+                title = data.get('title', url)
+                await ctx.send(f'Added to queue: **{title}** (Position: {len(queue)})')
+            except:
+                await ctx.send(f'Added to queue: {url} (Position: {len(queue)})')
+        
+    except Exception as e:
+        await ctx.send(f'Error: {str(e)[:150]}')
 
-@bot.command(name='pause')
+@bot.command()
 async def pause(ctx):
+    """Pause the music"""
     voice_client = ctx.voice_client
     if voice_client and voice_client.is_playing():
         voice_client.pause()
-        await ctx.send('Paused ⏸️')
+        await ctx.send('Paused')
     else:
         await ctx.send('Not playing any music.')
 
-@bot.command(name='resume')
+@bot.command()
 async def resume(ctx):
+    """Resume the music"""
     voice_client = ctx.voice_client
     if voice_client and voice_client.is_paused():
         voice_client.resume()
-        await ctx.send('Resumed ▶️')
+        await ctx.send('Resumed')
     else:
         await ctx.send('Music is not paused.')
 
-@bot.command(name='stop')
+@bot.command()
 async def stop(ctx):
+    """Stop the music"""
     voice_client = ctx.voice_client
     if voice_client:
         # Clear queue
         if ctx.guild.id in queues:
             queues[ctx.guild.id].clear()
         
-        voice_client.stop()
-        await ctx.send('Stopped ⏹️')
+        if voice_client.is_playing() or voice_client.is_paused():
+            voice_client.stop()
+        
+        await ctx.send('Stopped and queue cleared')
     else:
         await ctx.send('Not in a voice channel.')
 
-@bot.command(name='skip')
+@bot.command()
 async def skip(ctx):
+    """Skip current song"""
     voice_client = ctx.voice_client
     if voice_client and voice_client.is_playing():
         voice_client.stop()
-        await ctx.send('Skipped ⏭️')
+        await ctx.send('Skipped')
     else:
         await ctx.send('Not playing any music.')
 
-@bot.command(name='queue')
-async def queue_cmd(ctx):
-    queue = get_queue(ctx.guild.id)
+@bot.command()
+async def queue(ctx):
+    """Show the queue"""
+    queue_list = get_queue(ctx.guild.id)
     
-    if not queue:
+    if not queue_list:
         await ctx.send('Queue is empty.')
         return
     
     message = '**Music Queue:**\n'
-    for i, url in enumerate(list(queue)[:10], 1):
-        message += f'{i}. {url}\n'
+    for i, url in enumerate(list(queue_list)[:10], 1):
+        try:
+            # Get title for display
+            data = await bot.loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=False, process=False))
+            if 'entries' in data:
+                data = data['entries'][0]
+            title = data.get('title', 'Unknown')
+            message += f'{i}. {title}\n'
+        except:
+            message += f'{i}. {url}\n'
     
-    if len(queue) > 10:
-        message += f'\n...and {len(queue) - 10} more'
+    if len(queue_list) > 10:
+        message += f'\n...and {len(queue_list) - 10} more'
     
     await ctx.send(message)
 
-@bot.command(name='leave')
+@bot.command()
 async def leave(ctx):
+    """Leave voice channel"""
     voice_client = ctx.voice_client
     if voice_client:
         # Clear queue
@@ -210,18 +245,36 @@ async def leave(ctx):
             queues[ctx.guild.id].clear()
         
         await voice_client.disconnect()
-        await ctx.send('Left voice channel 👋')
+        await ctx.send('Left voice channel')
     else:
         await ctx.send('Not in a voice channel.')
 
-@bot.command(name='ping')
+@bot.command()
 async def ping(ctx):
+    """Check bot latency"""
     latency = round(bot.latency * 1000)
     await ctx.send(f'Pong! {latency}ms')
 
-@bot.command(name='test')
+@bot.command()
 async def test(ctx):
-    await ctx.send('Bot is working! ✅')
+    """Test command"""
+    await ctx.send('Bot is working!')
+
+@bot.command()
+async def say(ctx, *, message: str):
+    """Make the bot say something"""
+    await ctx.send(message)
+
+# Error handling
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandNotFound):
+        return
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send('Missing required argument.')
+    else:
+        print(f'Error: {error}')
+        await ctx.send(f'An error occurred: {str(error)[:100]}')
 
 # Run bot
 TOKEN = os.getenv('DISCORD_TOKEN')
@@ -229,6 +282,8 @@ TOKEN = os.getenv('DISCORD_TOKEN')
 if TOKEN:
     print(f"Token found: {TOKEN[:20]}...")
     print("Starting bot...")
+    print('=' * 60)
     bot.run(TOKEN)
 else:
     print("ERROR: No DISCORD_TOKEN found!")
+    print("Make sure to set DISCORD_TOKEN environment variable")
