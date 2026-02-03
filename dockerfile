@@ -1,10 +1,12 @@
 FROM python:3.10-slim
 
+# Install dependencies
 RUN apt-get update && apt-get install -y \
     ffmpeg \
+    libsodium-dev \
+    libopus-dev \
+    libopus0 \
     && rm -rf /var/lib/apt/lists/*
-
-RUN ffmpeg -version
 
 WORKDIR /app
 
