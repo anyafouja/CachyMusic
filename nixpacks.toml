@@ -1,7 +1,7 @@
 [phases.setup]
 cmds = [
     "apt-get update",
-    "apt-get install -y ffmpeg libsodium-dev"
+    "apt-get install -y ffmpeg libopus-dev libopus0 libsodium-dev"
 ]
 
 [phases.install]
