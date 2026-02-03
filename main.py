@@ -8,73 +8,22 @@ import subprocess
 import sys
 from collections import deque
 
-# ==================== AGGRESIVE OPUS FIX ====================
 print("=" * 60)
-print("INITIALIZING DISCORD MUSIC BOT - RAILWAY FIX")
+print("DISCORD MUSIC BOT - NO OPUS VERSION")
 print("=" * 60)
 
-# Check if we're on Railway
-IS_RAILWAY = os.path.exists('/app') or os.path.exists('/railway')
+# Cek FFmpeg
+try:
+    result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True)
+    if result.returncode == 0:
+        print("FFmpeg found and working")
+        ffmpeg_version = result.stdout.split('\n')[0]
+        print(f"FFmpeg version: {ffmpeg_version[:100]}")
+    else:
+        print("FFmpeg not working properly")
+except Exception as e:
+    print(f"FFmpeg check error: {e}")
 
-print(f"Running on Railway: {IS_RAILWAY}")
-print("Checking Opus library...")
-
-# Force opus load with different methods
-if not discord.opus.is_loaded():
-    print("Opus not loaded. Attempting to load...")
-    
-    # Try different paths specifically for Railway
-    opus_paths = [
-        # Railway paths
-        '/usr/lib/x86_64-linux-gnu/libopus.so.0',
-        '/usr/lib/libopus.so.0',
-        # Standard paths
-        'libopus.so.0',
-        'opus',
-        # Alternative paths
-        '/lib/x86_64-linux-gnu/libopus.so.0',
-        '/usr/local/lib/libopus.so.0',
-    ]
-    
-    loaded = False
-    for path in opus_paths:
-        try:
-            print(f"Trying to load opus from: {path}")
-            discord.opus.load_opus(path)
-            if discord.opus.is_loaded():
-                print(f"SUCCESS: Loaded opus from {path}")
-                loaded = True
-                break
-        except Exception as e:
-            print(f"Failed to load from {path}: {str(e)[:100]}")
-    
-    if not loaded and IS_RAILWAY:
-        print("Attempting to locate opus library...")
-        # Try to find opus library
-        try:
-            find_result = subprocess.run(
-                ['find', '/', '-name', 'libopus.so*', '-type', 'f'],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            if find_result.stdout:
-                print("Found opus libraries:")
-                for line in find_result.stdout.strip().split('\n'):
-                    if line:
-                        print(f"  - {line}")
-                        try:
-                            discord.opus.load_opus(line)
-                            if discord.opus.is_loaded():
-                                print(f"SUCCESS: Loaded from found path: {line}")
-                                loaded = True
-                                break
-                        except:
-                            continue
-        except:
-            pass
-
-print(f"Opus loaded status: {discord.opus.is_loaded()}")
 print("=" * 60)
 
 # ==================== BOT SETUP ====================
@@ -84,14 +33,7 @@ intents.voice_states = True
 intents.guilds = True
 intents.members = True
 
-class MusicBot(commands.Bot):
-    def __init__(self):
-        super().__init__(command_prefix="!", intents=intents)
-        
-    async def setup_hook(self):
-        self.remove_command('help')
-
-bot = MusicBot()
+bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ==================== MUSIC QUEUE ====================
 music_queues = {}
@@ -113,16 +55,16 @@ YTDL_OPTIONS = {
     'no_check_certificate': True,
 }
 
-# ==================== FFMPEG OPTIONS ====================
+# ==================== FFMPEG OPTIONS (NO OPUS) ====================
 FFMPEG_OPTIONS = {
     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin',
-    'options': '-vn -acodec libopus -b:a 96k -f opus'
+    'options': '-vn -c:a aac -b:a 128k -f s16le -ar 48000 -ac 2'
 }
 
 ytdl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
 
-# ==================== AUDIO SOURCE CLASS ====================
-class YTDLSource(discord.PCMVolumeTransformer):
+# ==================== SIMPLE AUDIO SOURCE ====================
+class AudioSource(discord.PCMVolumeTransformer):
     def __init__(self, source, *, data, volume=0.5):
         super().__init__(source, volume)
         self.data = data
@@ -145,6 +87,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
         
         audio_url = data['url']
         
+        # Gunakan FFmpegPCMAudio langsung tanpa opus
         return cls(discord.FFmpegPCMAudio(audio_url, **FFMPEG_OPTIONS), data=data)
 
 # ==================== HELPER FUNCTIONS ====================
@@ -181,14 +124,13 @@ async def play_next(ctx):
         queue_data['current'] = song
     else:
         queue_data['current'] = None
-        await ctx.channel.send("Queue telah habis!")
         return
     
     if not song:
         return
     
     try:
-        player = await YTDLSource.from_url(song['url'], loop=bot.loop)
+        player = await AudioSource.from_url(song['url'], loop=bot.loop)
         player.volume = 0.5
         
         def after_playing(error):
@@ -210,11 +152,6 @@ async def play_next(ctx):
         if song.get('webpage_url'):
             embed.add_field(name="Link", value=f"[Click here]({song['webpage_url']})", inline=False)
         
-        if queue_data['loop']:
-            embed.set_footer(text="Loop: ON (Single)")
-        elif queue_data['loop_queue']:
-            embed.set_footer(text="Loop: ON (Queue)")
-        
         await ctx.channel.send(embed=embed)
         
     except Exception as e:
@@ -228,7 +165,6 @@ async def on_ready():
     print('=' * 60)
     print(f'Music Bot {bot.user} ONLINE!')
     print(f'Connected to {len(bot.guilds)} server(s)')
-    print(f'Opus loaded: {discord.opus.is_loaded()}')
     print('=' * 60)
     
     await bot.change_presence(
@@ -266,19 +202,11 @@ async def play(interaction: discord.Interaction, query: str):
         await interaction.followup.send("Bot tidak punya permission untuk speak di voice channel!", ephemeral=True)
         return
     
-    if not discord.opus.is_loaded():
-        await interaction.followup.send("ERROR: Audio library tidak terload. Bot tidak bisa memutar musik.")
-        return
-    
     voice_client = interaction.guild.voice_client
     
     if not voice_client:
         try:
-            voice_client = await voice_channel.connect(
-                timeout=30.0,
-                reconnect=True,
-                self_deaf=True
-            )
+            voice_client = await voice_channel.connect(timeout=30.0, reconnect=True)
             print(f"Connected to voice channel: {voice_channel.name}")
         except Exception as e:
             await interaction.followup.send(f"Gagal connect ke voice channel: {str(e)}")
@@ -328,7 +256,7 @@ async def play(interaction: discord.Interaction, query: str):
             queue_data['current'] = song
             
             try:
-                player = await YTDLSource.from_url(song['url'], loop=bot.loop)
+                player = await AudioSource.from_url(song['url'], loop=bot.loop)
                 player.volume = 0.5
                 
                 def after_playing(error):
@@ -570,11 +498,23 @@ async def nowplaying(interaction: discord.Interaction):
     else:
         await interaction.response.send_message("Tidak ada lagu yang sedang diputar", ephemeral=True)
 
+@bot.tree.command(name="ping", description="Cek latency bot")
+async def ping(interaction: discord.Interaction):
+    latency = round(bot.latency * 1000)
+    
+    embed = discord.Embed(
+        title="Pong!",
+        description=f"Latency: **{latency}ms**",
+        color=discord.Color.green() if latency < 100 else discord.Color.orange()
+    )
+    
+    await interaction.response.send_message(embed=embed)
+
 # ==================== RUN BOT ====================
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 if not TOKEN:
-    print("ERROR: DISCORD_TOKEN tidak ditemukan di environment variables!")
+    print("ERROR: DISCORD_TOKEN tidak ditemukan!")
     
     try:
         from dotenv import load_dotenv
@@ -587,18 +527,12 @@ if not TOKEN:
 
 if TOKEN:
     print(f"Token ditemukan: {TOKEN[:20]}...")
-    
-    print("\n" + "=" * 60)
-    print("SYSTEM INFORMATION")
     print("=" * 60)
-    print(f"Python: {sys.version}")
-    print(f"Discord.py: {discord.__version__}")
-    print("=" * 60 + "\n")
     
     try:
         bot.run(TOKEN, reconnect=True)
     except discord.LoginFailure:
-        print("ERROR: Token invalid! Pastikan token benar.")
+        print("ERROR: Token invalid!")
     except Exception as e:
         print(f"ERROR: {e}")
 else:
