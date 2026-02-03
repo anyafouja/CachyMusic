@@ -1,11 +1,11 @@
 [phases.setup]
 cmds = [
     "apt-get update",
-    "apt-get install -y ffmpeg libopus-dev libopus0 libsodium-dev"
+    "apt-get install -y ffmpeg libopus0"
 ]
 
 [phases.install]
-cmds = ["pip install -r requirements.txt"]
+cmds = ["pip install --no-cache-dir -r requirements.txt"]
 
 [start]
 cmd = "python main.py"
