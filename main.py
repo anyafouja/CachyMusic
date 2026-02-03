@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 import os
 import subprocess
+import asyncio
 
 print("=" * 60)
 print("TESTING FFMPEG BOT")
@@ -15,12 +16,14 @@ try:
     
     version_result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True)
     if version_result.returncode == 0:
-        print("✓ FFmpeg is installed and working!")
-        print(f"Version: {version_result.stdout.split('\\n')[0]}")
+        print("FFmpeg is installed and working!")
+        # FIX: jangan pakai backslash di f-string
+        first_line = version_result.stdout.split('\n')[0]
+        print(f"Version: {first_line}")
     else:
-        print("✗ FFmpeg is not working")
+        print("FFmpeg is not working")
 except Exception as e:
-    print(f"✗ FFmpeg test failed: {e}")
+    print(f"FFmpeg test failed: {e}")
 
 print("=" * 60)
 
@@ -44,7 +47,6 @@ async def on_ready():
 
 @bot.command()
 async def join(ctx):
-    """Join voice channel"""
     if not ctx.author.voice:
         await ctx.send("You need to be in a voice channel!")
         return
@@ -53,72 +55,118 @@ async def join(ctx):
     
     try:
         vc = await channel.connect()
-        await ctx.send(f"✅ Connected to {channel.name}")
+        await ctx.send(f"Connected to {channel.name}")
         
-        # Test FFmpeg di voice channel
         await test_ffmpeg(ctx, vc)
         
     except Exception as e:
-        await ctx.send(f"❌ Error: {str(e)}")
+        await ctx.send(f"Error: {str(e)}")
 
 async def test_ffmpeg(ctx, vc):
-    """Test FFmpeg dengan audio dummy"""
     try:
-        # Method 1: Generate silent audio dengan FFmpeg
-        ffmpeg_options = {
-            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-            'options': '-vn -f s16le -ar 48000 -ac 2'
-        }
+        # Test dengan audio sederhana
+        await ctx.send("Testing audio playback...")
         
-        # Coba beberapa metode berbeda
-        audio_sources = [
-            # Method 1: Dummy audio dari FFmpeg
-            discord.FFmpegPCMAudio(
-                "pipe:0",
-                before_options='-f lavfi -i anullsrc=r=48000:cl=stereo -t 3',
-                options='-f s16le -acodec pcm_s16le'
-            ),
-            # Method 2: Simple PCM
-            discord.FFmpegPCMAudio(
+        # Method 1: Audio test sederhana
+        try:
+            audio_source = discord.FFmpegPCMAudio(
                 "pipe:0",
                 before_options='-f lavfi -i sine=frequency=1000:duration=2',
                 options='-f s16le -acodec pcm_s16le'
             )
-        ]
-        
-        for i, source in enumerate(audio_sources):
-            try:
-                vc.play(source)
-                await ctx.send(f"🎵 Playing test audio {i+1}...")
+            
+            vc.play(audio_source)
+            
+            # Tunggu selesai
+            while vc.is_playing():
+                await asyncio.sleep(0.1)
                 
-                # Tunggu sampai selesai
-                while vc.is_playing():
-                    await asyncio.sleep(0.1)
-                    
-                await asyncio.sleep(1)
-                
-            except Exception as e:
-                await ctx.send(f"Audio test {i+1} failed: {str(e)[:100]}")
+            await ctx.send("Audio test 1 passed")
+            
+        except Exception as e:
+            await ctx.send(f"Audio test 1 failed: {str(e)[:100]}")
         
-        await ctx.send("✅ All audio tests completed!")
+        # Test kedua
+        await asyncio.sleep(1)
+        
+        try:
+            # Test dengan opsi berbeda
+            audio_source2 = discord.FFmpegPCMAudio(
+                "pipe:0",
+                before_options='-f lavfi -i anullsrc=r=48000:cl=stereo -t 2',
+                options='-f s16le -acodec pcm_s16le'
+            )
+            
+            vc.play(audio_source2)
+            
+            while vc.is_playing():
+                await asyncio.sleep(0.1)
+                
+            await ctx.send("Audio test 2 passed")
+            
+        except Exception as e:
+            await ctx.send(f"Audio test 2 failed: {str(e)[:100]}")
+        
+        await ctx.send("All audio tests completed")
         
     except Exception as e:
-        await ctx.send(f"❌ Audio test failed: {str(e)}")
+        await ctx.send(f"Audio test failed: {str(e)}")
 
 @bot.command()
 async def leave(ctx):
-    """Leave voice channel"""
     if ctx.voice_client:
         await ctx.voice_client.disconnect()
-        await ctx.send("✅ Left voice channel")
+        await ctx.send("Left voice channel")
     else:
-        await ctx.send("❌ Not in a voice channel")
+        await ctx.send("Not in a voice channel")
 
 @bot.command()
 async def ping(ctx):
-    """Check bot latency"""
     latency = round(bot.latency * 1000)
-    await ctx.send(f"🏓 Pong! Latency: {latency}ms")
+    await ctx.send(f"Pong! Latency: {latency}ms")
+
+@bot.command()
+async def playtest(ctx, url: str = None):
+    if not ctx.author.voice:
+        await ctx.send("Join voice channel first!")
+        return
+    
+    if not ctx.voice_client:
+        await ctx.author.voice.channel.connect()
+    
+    vc = ctx.voice_client
+    
+    try:
+        if url:
+            # Simple audio from URL
+            await ctx.send(f"Testing audio from: {url[:50]}")
+            
+            # Pakai yt-dlp sederhana
+            import yt_dlp
+            
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'quiet': True,
+            }
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                audio_url = info['url']
+                
+                audio_source = discord.FFmpegPCMAudio(
+                    audio_url,
+                    before_options='-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+                    options='-vn'
+                )
+                
+                vc.play(audio_source)
+                await ctx.send("Playing audio from URL...")
+        else:
+            # Default test
+            await test_ffmpeg(ctx, vc)
+            
+    except Exception as e:
+        await ctx.send(f"Playtest error: {str(e)[:150]}")
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
@@ -127,4 +175,4 @@ if TOKEN:
     print("Starting bot...")
     bot.run(TOKEN)
 else:
-    print("❌ ERROR: No DISCORD_TOKEN found!")
+    print("ERROR: No DISCORD_TOKEN found!")
