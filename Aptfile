@@ -1,2 +1,11 @@
-ffmpeg
-libavcodec-extra
+[phases.setup]
+cmds = [
+    "apt-get update",
+    "apt-get install -y ffmpeg libsodium-dev"
+]
+
+[phases.install]
+cmds = ["pip install -r requirements.txt"]
+
+[start]
+cmd = "python main.py"
