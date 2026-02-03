@@ -1,4 +1,2 @@
 ffmpeg
-libopus-dev
-libopus0
-libsodium-dev
+libavcodec-extra
