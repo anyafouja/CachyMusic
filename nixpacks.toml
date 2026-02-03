@@ -1,5 +1,8 @@
 [phases.setup]
-cmds = ["apt-get update", "apt-get install -y ffmpeg"]
+cmds = [
+    "apt-get update",
+    "apt-get install -y ffmpeg libsodium-dev"
+]
 
 [phases.install]
 cmds = ["pip install -r requirements.txt"]
