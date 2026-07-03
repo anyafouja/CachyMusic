@@ -1,9 +1,14 @@
 import asyncio
+import os
 import discord
 import random
 import itertools
 from discord.ext import commands
 import wavelink
+from supabase import create_client, Client
+
+SUPABASE_URL = os.getenv('SUPABASE_URL')
+SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 
 
 class MusicPlayer:
@@ -30,6 +35,38 @@ class MusicPlayer:
         self.history = []
 
         self._task = ctx.bot.loop.create_task(self.player_loop())
+        self._status_task = self.bot.loop.create_task(self.update_supabase_status())
+
+    async def update_supabase_status(self):
+        if not self._cog.supabase:
+            return
+
+        while not self.bot.is_closed() and not self._stop:
+            try:
+                vc = self._guild.voice_client
+                status = {
+                    'guild_id': str(self._guild.id),
+                    'is_playing': vc.playing if vc else False,
+                    'is_paused': vc.paused if vc else False,
+                    'current_track': {
+                        'title': self.current.title,
+                        'author': self.current.author,
+                        'length': self.current.length,
+                        'artwork': self.current.artwork,
+                        'uri': self.current.uri
+                    } if self.current else None,
+                    'queue': [
+                        {'title': t.title, 'author': t.author, 'uri': t.uri}
+                        for t in list(itertools.islice(self.queue._queue, 0, 10))
+                    ],
+                    'loop': self.loop,
+                    'volume': int(self.volume * 100),
+                    'updated_at': 'now()'
+                }
+                self._cog.supabase.table('bot_status').upsert(status).execute()
+            except Exception:
+                pass
+            await asyncio.sleep(5)
 
     async def player_loop(self):
         await self.bot.wait_until_ready()
@@ -188,12 +225,72 @@ class Music(commands.Cog):
         self.bot = bot
         self.players = {}
         self.locks = {}
+        self.supabase: Client = None
+        if SUPABASE_URL and SUPABASE_KEY:
+            self.supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+            self.bot.loop.create_task(self.supabase_command_listener())
+
+    async def supabase_command_listener(self):
+        # Polling commands from supabase (since real-time python client is limited)
+        while not self.bot.is_closed():
+            try:
+                res = self.supabase.table('bot_commands').select('*').eq('processed', False).order('created_at').execute()
+                for cmd in res.data:
+                    guild_id = int(cmd['guild_id'])
+                    guild = self.bot.get_guild(guild_id)
+                    if not guild:
+                        continue
+
+                    action = cmd['action']
+                    data = cmd.get('data', {})
+
+                    # Mock a context for commands
+                    # This is tricky because we need a channel to send messages
+                    # We'll try to find a player first
+                    player = self.players.get(guild_id)
+                    if player:
+                        ctx = await self.bot.get_context(player.np) if player.np else None # Not ideal
+
+                        if action == 'play' and 'query' in data:
+                            # Search and add to queue
+                            tracks = await wavelink.Playable.search(data['query'])
+                            if tracks:
+                                track = tracks[0]
+                                await player.queue.put(track)
+                        elif action == 'previous':
+                            if player.history:
+                                player._next_up = player.history.pop()
+                                player._stop = True
+                                if guild.voice_client: await guild.voice_client.stop()
+                        elif action == 'pause':
+                            vc = guild.voice_client
+                            if vc and vc.playing: await vc.pause(True)
+                        elif action == 'resume':
+                            vc = guild.voice_client
+                            if vc and vc.paused: await vc.pause(False)
+                        elif action == 'skip':
+                            player._stop = True
+                            if guild.voice_client: await guild.voice_client.stop()
+                        elif action == 'stop':
+                            await self.cleanup(guild)
+                        elif action == 'volume':
+                            vol = data.get('volume', 50)
+                            vc = guild.voice_client
+                            if vc: await vc.set_volume(vol)
+                            player.volume = vol / 100
+
+                    self.supabase.table('bot_commands').update({'processed': True}).eq('id', cmd['id']).execute()
+            except Exception as e:
+                print(f"Supabase error: {e}")
+            await asyncio.sleep(2)
 
     async def cleanup(self, guild):
         try:
             player = self.players.get(guild.id)
             if player:
                 player._stop = True
+                if hasattr(player, '_status_task') and not player._status_task.done():
+                    player._status_task.cancel()
                 if player.np:
                     try:
                         await player.np.delete()
