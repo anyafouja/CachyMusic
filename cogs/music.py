@@ -6,23 +6,12 @@ from discord.ext import commands
 import wavelink
 
 
-FFMPEG_OPTIONS = {
-    'before_options': (
-        '-reconnect 1 '
-        '-reconnect_streamed 1 '
-        '-reconnect_delay_max 5 '
-        '-reconnect_on_network_error 1 '
-    ),
-    'options': '-vn',
-}
-
-
 class MusicPlayer:
     __slots__ = (
         'bot', '_guild', '_channel', '_cog',
         'queue', 'current', 'np', 'volume',
         'loop', '_stop', '_next_up', 'history',
-        '_task', '_finished',
+        '_task',
     )
 
     def __init__(self, ctx):
@@ -40,20 +29,13 @@ class MusicPlayer:
         self._next_up = None
         self.history = []
 
-        self._finished = asyncio.Event()
         self._task = ctx.bot.loop.create_task(self.player_loop())
-
-    def _after_playing(self, error):
-        if error:
-            print(f'[MusicPlayer] Playback error: {error}')
-        self.bot.loop.call_soon_threadsafe(self._finished.set)
 
     async def player_loop(self):
         await self.bot.wait_until_ready()
 
         while not self.bot.is_closed():
             self._stop = False
-            self._finished.clear()
 
             try:
                 if self._next_up:
@@ -62,7 +44,7 @@ class MusicPlayer:
                 elif self.loop and self.current:
                     item = self.current
                 else:
-                    item = await asyncio.wait_for(self.queue.get(), timeout=300)
+                    item = await asyncio.wait_for(self.queue.get(), timeout=120)
             except asyncio.TimeoutError:
                 await self._cog.cleanup(self._guild)
                 return
@@ -132,6 +114,9 @@ class MusicPlayer:
                     except Exception:
                         pass
                 self.np = None
+                # Nothing left to play — disconnect instead of sitting idle
+                await self._cog.cleanup(self._guild)
+                return
 
 
 class NowPlayingView(discord.ui.View):
@@ -257,7 +242,7 @@ class Music(commands.Cog):
             return
         vc = member.guild.voice_client
         if vc and vc.channel and len([m for m in vc.channel.members if not m.bot]) == 0:
-            await asyncio.sleep(60)
+            await asyncio.sleep(10)
             vc = member.guild.voice_client
             if vc and vc.channel and len([m for m in vc.channel.members if not m.bot]) == 0:
                 await self.cleanup(member.guild)
