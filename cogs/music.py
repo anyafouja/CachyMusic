@@ -29,15 +29,13 @@ class MusicPlayer:
         self._next_up = None
         self.history = []
 
-        self._task = ctx.bot.loop.create_task(self.player_loop())
+        self._task = asyncio.create_task(self.player_loop())
 
     async def player_loop(self):
         await self.bot.wait_until_ready()
 
         try:
             while not self.bot.is_closed():
-                self._stop = False
-
                 try:
                     if self._next_up:
                         item = self._next_up
@@ -45,10 +43,9 @@ class MusicPlayer:
                     elif self.loop and self.current:
                         item = self.current
                     else:
-                        item = await asyncio.wait_for(self.queue.get(), timeout=300)
-                except asyncio.TimeoutError:
-                    return
-                except asyncio.CancelledError:
+                        # Tunggu lagu baru atau timeout setelah 3 menit (180 detik) ketidakaktifan
+                        item = await asyncio.wait_for(self.queue.get(), timeout=180)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
                     return
 
                 track = item
@@ -56,15 +53,16 @@ class MusicPlayer:
                 if not vc or not isinstance(vc, wavelink.Player):
                     return
 
+                self._stop = False
+                self.current = track
+
                 try:
                     await vc.play(track)
                 except Exception:
                     self.current = None
                     continue
 
-                self.current = track
                 view = NowPlayingView(self, self._guild.id)
-
                 try:
                     embed = discord.Embed(title=track.title[:256], color=0xFFC0CB)
                     if track.artwork:
@@ -81,13 +79,13 @@ class MusicPlayer:
                     pass
 
                 try:
-                    while vc.playing or vc.paused:
+                    while (vc.playing or vc.paused) and self._guild.voice_client:
                         await asyncio.sleep(2)
                         if self._stop:
-                            await vc.stop()
                             break
-                        if not self._guild.voice_client:
-                            return
+
+                    if self._stop:
+                        await vc.stop()
                 except Exception:
                     pass
 
@@ -99,7 +97,8 @@ class MusicPlayer:
                 if not self.loop:
                     self.current = None
 
-                if not self.current and self.queue.empty():
+                # Langsung putus koneksi jika antrean kosong setelah lagu selesai
+                if not self.loop and self.queue.empty() and not self._next_up:
                     return
         except Exception:
             pass
@@ -190,35 +189,42 @@ class Music(commands.Cog):
         self.locks = {}
 
     async def cleanup(self, guild):
-        try:
-            player = self.players.get(guild.id)
-            if player:
-                player._stop = True
-                if player.np:
-                    try:
-                        await player.np.delete()
-                    except Exception:
-                        pass
-                    player.np = None
-                if player._task and not player._task.done():
-                    player._task.cancel()
-        except Exception:
-            pass
-        try:
-            vc = guild.voice_client
-            if vc:
-                await vc.disconnect(force=True)
-        except Exception:
-            pass
-        self.players.pop(guild.id, None)
+        # Hapus pemain dari cache terlebih dahulu untuk menghindari status "zombie"
+        player = self.players.pop(guild.id, None)
         self.locks.pop(guild.id, None)
+
+        if player:
+            player._stop = True
+            if player.np:
+                try:
+                    await player.np.delete()
+                except Exception:
+                    pass
+                player.np = None
+
+            # Jangan batalkan task jika kita sedang berada di dalam task tersebut (dipanggil dari player_loop)
+            current_task = asyncio.current_task()
+            if player._task and not player._task.done() and player._task != current_task:
+                player._task.cancel()
+
+        # Pastikan koneksi suara terputus
+        vc = guild.voice_client
+        if vc:
+            try:
+                await vc.disconnect(force=True)
+            except Exception:
+                pass
 
     async def get_player(self, ctx):
         guild_id = ctx.guild.id
         if guild_id not in self.locks:
             self.locks[guild_id] = asyncio.Lock()
         async with self.locks[guild_id]:
-            if guild_id not in self.players:
+            player = self.players.get(guild_id)
+            if not player or (player._task and player._task.done()):
+                # Jika pemain ada tapi task sudah selesai, bersihkan dulu
+                if player:
+                    await self.cleanup(ctx.guild)
                 self.players[guild_id] = MusicPlayer(ctx)
             return self.players[guild_id]
 
@@ -228,9 +234,17 @@ class Music(commands.Cog):
             if after.channel is None:
                 await self.cleanup(member.guild)
             return
+
         vc = member.guild.voice_client
-        if vc and vc.channel and len([m for m in vc.channel.members if not m.bot]) == 0:
-            await asyncio.sleep(10)
+        if not vc or not vc.channel:
+            return
+
+        # Jika bot sendirian di channel
+        if len([m for m in vc.channel.members if not m.bot]) == 0:
+            # Tunggu sebentar (30 detik) sebelum disconnect untuk memberi kesempatan user bergabung kembali
+            await asyncio.sleep(30)
+
+            # Cek kembali setelah 30 detik
             vc = member.guild.voice_client
             if vc and vc.channel and len([m for m in vc.channel.members if not m.bot]) == 0:
                 await self.cleanup(member.guild)
@@ -270,10 +284,9 @@ class Music(commands.Cog):
     async def play_(self, ctx, *, search: str):
         """Plays a song from YouTube or SoundCloud."""
         await ctx.defer()
-        if not await self._ensure_voice(ctx):
-            return
 
-        vc = ctx.voice_client
+        if not ctx.author.voice:
+            return await ctx.send('Kamu tidak terhubung ke saluran suara.')
 
         try:
             tracks = await wavelink.Playable.search(
@@ -293,6 +306,9 @@ class Music(commands.Cog):
 
         except Exception as e:
             return await ctx.send(f'Pencarian gagal: `{e}`')
+
+        if not await self._ensure_voice(ctx):
+            return
 
         player = await self.get_player(ctx)
 
