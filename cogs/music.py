@@ -36,43 +36,45 @@ class MusicPlayer:
         if not track:
             return None
 
-        embed = discord.Embed(color=0x5865f2)
+        # Pink color 0xFFC0CB
+        embed = discord.Embed(color=0xffc0cb)
         embed.set_author(name="Now playing")
 
-        requester_mention = "Tidak diketahui"
+        requester_mention = "Unknown"
         if hasattr(track, 'requester'):
             requester_mention = track.requester.mention
 
-        # Konten utama
+        # Title as link (bold)
         description = f"**[{track.title[:100]}]({track.uri})**\n"
-        description += f"• Added by {requester_mention}\n"
+        description += f"  - Added by: {requester_mention}\n"
 
         voice_channel = "Unknown"
         if vc.channel:
             voice_channel = vc.channel.name
-        description += f"• 🔊 {voice_channel}\n\n"
+        description += f"  - Channel: {voice_channel}\n\n"
 
-        # Baris statistik
+        # Stats line (ASCII separators only)
         queue_size = self.queue.qsize()
         loop_status = "On" if self.loop else "Off"
-        description += f"Queue Size: `{queue_size}` · Volume: `{self.volume}%` · Loop: `{loop_status}`\n\n"
+        description += f"Queue Size: {queue_size} - Volume: {self.volume}% - Loop: {loop_status}\n\n"
 
-        # Progress Bar
+        # ASCII Progress Bar (Strictly no Unicode)
         pos_ms = vc.position
         dur_ms = track.length
-        bar_size = 25
+        bar_size = 20
 
         if dur_ms > 0:
             progress = min(pos_ms / dur_ms, 1.0)
             filled = int(progress * bar_size)
-            bar = "━" * filled + "🔘" + "━" * (bar_size - filled)
+            bar = "=" * filled + "o" + "-" * (bar_size - filled)
         else:
-            bar = "🔘" + "━" * bar_size
+            bar = "o" + "-" * bar_size
 
         pos_str = _format_duration(pos_ms)
         dur_str = _format_duration(dur_ms)
 
-        description += f"{bar}\n`{pos_str}`" + (" " * 35) + f"`{dur_str}`"
+        # Layout matching reference image
+        description += f"[{bar}]\n{pos_str} / {dur_str}"
 
         embed.description = description
 
@@ -174,24 +176,24 @@ class NowPlayingView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.guild_id != self.guild_id:
-            await interaction.response.send_message('Bukan untuk server ini.', ephemeral=True)
+            await interaction.response.send_message('Not for this server.', ephemeral=True)
             return False
         vc = interaction.guild.voice_client
         if not vc or not vc.channel:
-            await interaction.response.send_message('Tidak terhubung ke suara.', ephemeral=True)
+            await interaction.response.send_message('Not connected to voice.', ephemeral=True)
             return False
         if interaction.user not in vc.channel.members:
-            await interaction.response.send_message('Bergabunglah dengan saluran suara terlebih dahulu.', ephemeral=True)
+            await interaction.response.send_message('Join the voice channel first.', ephemeral=True)
             return False
         return True
 
-    @discord.ui.button(emoji='⏮️', style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label='<<', style=discord.ButtonStyle.secondary)
     async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
         player = self.player
         if not player.current:
-            return await interaction.response.send_message('Tidak ada yang sedang diputar.', ephemeral=True)
+            return await interaction.response.send_message('Nothing is playing.', ephemeral=True)
         if not player.history:
-            return await interaction.response.send_message('Tidak ada lagu sebelumnya.', ephemeral=True)
+            return await interaction.response.send_message('No previous tracks.', ephemeral=True)
         player._next_up = player.history.pop()
         player._stop = True
         vc = interaction.guild.voice_client
@@ -199,43 +201,42 @@ class NowPlayingView(discord.ui.View):
             await vc.stop()
         await interaction.response.defer()
 
-    @discord.ui.button(emoji='⏸️', style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label='||', style=discord.ButtonStyle.secondary)
     async def pause_play(self, interaction: discord.Interaction, button: discord.ui.Button):
         vc = interaction.guild.voice_client
         if not vc or not isinstance(vc, wavelink.Player):
-            return await interaction.response.send_message('Tidak terhubung.', ephemeral=True)
+            return await interaction.response.send_message('Not connected.', ephemeral=True)
         if vc.paused:
             await vc.pause(False)
         elif vc.playing:
             await vc.pause(True)
         else:
-            return await interaction.response.send_message('Tidak ada yang sedang diputar.', ephemeral=True)
+            return await interaction.response.send_message('Nothing is playing.', ephemeral=True)
 
         self.update_buttons(vc)
         embed = self.player.create_embed(vc)
         await interaction.response.edit_message(embed=embed, view=self)
 
     def update_buttons(self, vc: wavelink.Player):
-        # Update Pause/Play button
         for child in self.children:
             if isinstance(child, discord.ui.Button):
-                if child.emoji and str(child.emoji) in ['⏸️', '▶️']:
-                    child.emoji = '▶️' if vc.paused else '⏸️'
-                if child.emoji and str(child.emoji) == '🔁':
+                if child.label in ['||', '>']:
+                    child.label = '>' if vc.paused else '||'
+                if child.label == 'L':
                     child.style = discord.ButtonStyle.primary if self.player.loop else discord.ButtonStyle.secondary
 
-    @discord.ui.button(emoji='⏭️', style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label='>>', style=discord.ButtonStyle.secondary)
     async def next_(self, interaction: discord.Interaction, button: discord.ui.Button):
         player = self.player
         if not player.current:
-            return await interaction.response.send_message('Tidak ada yang sedang diputar.', ephemeral=True)
+            return await interaction.response.send_message('Nothing is playing.', ephemeral=True)
         player._stop = True
         vc = interaction.guild.voice_client
         if vc:
             await vc.stop()
         await interaction.response.defer()
 
-    @discord.ui.button(emoji='🔁', style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label='L', style=discord.ButtonStyle.secondary)
     async def loop_(self, interaction: discord.Interaction, button: discord.ui.Button):
         player = self.player
         player.loop = not player.loop
@@ -245,10 +246,10 @@ class NowPlayingView(discord.ui.View):
         embed = self.player.create_embed(vc)
         await interaction.response.edit_message(embed=embed, view=self)
 
-    @discord.ui.button(emoji='⏹️', style=discord.ButtonStyle.danger)
+    @discord.ui.button(label='X', style=discord.ButtonStyle.danger)
     async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.player._cog.cleanup(interaction.guild)
-        await interaction.response.send_message('Berhenti dan keluar.', ephemeral=True)
+        await interaction.response.send_message('Stopped.', ephemeral=True)
 
 
 def _format_duration(ms: int) -> str:
@@ -318,12 +319,12 @@ class Music(commands.Cog):
         if not vc or not vc.channel:
             return
 
-        # Jika bot sendirian di channel
+        # If bot is alone in channel
         if len([m for m in vc.channel.members if not m.bot]) == 0:
-            # Tunggu sebentar (30 detik) sebelum disconnect untuk memberi kesempatan user bergabung kembali
+            # Wait 30s before disconnecting to give user a chance to rejoin
             await asyncio.sleep(30)
 
-            # Cek kembali setelah 30 detik
+            # Check again
             vc = member.guild.voice_client
             if vc and vc.channel and len([m for m in vc.channel.members if not m.bot]) == 0:
                 await self.cleanup(member.guild)
@@ -332,19 +333,18 @@ class Music(commands.Cog):
         vc = ctx.voice_client
 
         if not ctx.author.voice:
-            await ctx.send('Kamu tidak terhubung ke saluran suara.')
+            await ctx.send('You are not connected to a voice channel.')
             return False
 
         target = ctx.author.voice.channel
 
         if not vc:
             if not await self.bot.ensure_node():
-                await ctx.send('Node Lavalink tidak tersedia — coba lagi nanti.')
+                await ctx.send('Lavalink node not available - try again later.')
                 return False
             try:
                 vc = await target.connect(cls=wavelink.Player, reconnect=True)
             except Exception:
-                # In case of "Already connected" or other issues, try to cleanup and reconnect
                 await self.cleanup(ctx.guild)
                 await asyncio.sleep(1)
                 vc = await target.connect(cls=wavelink.Player, reconnect=True)
@@ -355,7 +355,7 @@ class Music(commands.Cog):
 
     async def _ensure_node(self, ctx) -> bool:
         if not await self.bot.ensure_node():
-            await ctx.send('Node Lavalink tidak tersedia — coba lagi nanti.')
+            await ctx.send('Lavalink node not available - try again later.')
             return False
         return True
 
@@ -365,7 +365,7 @@ class Music(commands.Cog):
         await ctx.defer()
 
         if not ctx.author.voice:
-            return await ctx.send('Kamu tidak terhubung ke saluran suara.')
+            return await ctx.send('You are not connected to a voice channel.')
 
         try:
             tracks = await wavelink.Playable.search(
@@ -373,18 +373,17 @@ class Music(commands.Cog):
                 source=wavelink.TrackSource.YouTube,
             )
             if not tracks:
-                # Fallback to SoundCloud
                 tracks = await wavelink.Playable.search(
                     search,
                     source=wavelink.TrackSource.SC,
                 )
             if not tracks:
-                return await ctx.send('Tidak ada hasil ditemukan.')
+                return await ctx.send('No results found.')
 
             track = tracks if isinstance(tracks, wavelink.Playlist) else tracks[0]
 
         except Exception as e:
-            return await ctx.send(f'Pencarian gagal: `{e}`')
+            return await ctx.send(f'Search failed: `{e}`')
 
         if not await self._ensure_voice(ctx):
             return
@@ -395,14 +394,14 @@ class Music(commands.Cog):
             for t in track.tracks:
                 t.requester = ctx.author
                 await player.queue.put(t)
-            embed = discord.Embed(title='Daftar Putar Ditambahkan', color=0xFFC0CB)
-            embed.description = f'[{track.name}]({track.url}) — {len(track.tracks)} lagu'
+            embed = discord.Embed(title='Playlist Added', color=0xFFC0CB)
+            embed.description = f'[{track.name}]({track.url}) — {len(track.tracks)} tracks'
             if track.artwork:
                 embed.set_thumbnail(url=track.artwork)
         else:
             track.requester = ctx.author
             await player.queue.put(track)
-            embed = discord.Embed(title='Ditambahkan ke Antrean', color=0xFFC0CB)
+            embed = discord.Embed(title='Added to Queue', color=0xFFC0CB)
             embed.description = f'[{track.title}]({track.uri})'
             if track.artwork:
                 embed.set_thumbnail(url=track.artwork)
@@ -411,36 +410,36 @@ class Music(commands.Cog):
     @commands.hybrid_command(name='skip', aliases=['s'])
     async def skip_(self, ctx):
         """Skips the current song."""
-        await ctx.defer()
+        await ctx.defer(ephemeral=True)
         if not await self._ensure_node(ctx): return
         vc = ctx.voice_client
         if not vc or not (getattr(vc, 'playing', False) or getattr(vc, 'paused', False)):
-            return await ctx.send('Tidak ada yang sedang diputar.')
+            return await ctx.send('Nothing is playing.', ephemeral=True)
         player = await self.get_player(ctx)
         player._stop = True
         await vc.stop()
         player.current = None
-        await ctx.send(embed=discord.Embed(description='Lewati', color=0xFFC0CB))
+        await ctx.send('Skipped.', ephemeral=True)
 
     @commands.hybrid_command(name='stop')
     async def stop_(self, ctx):
-        """Menghentikan musik dan memutuskan koneksi bot."""
-        await ctx.defer()
+        """Stops the music and disconnects the bot."""
+        await ctx.defer(ephemeral=True)
         if not await self._ensure_node(ctx): return
         vc = ctx.voice_client
         if not vc or not vc.connected:
-            return await ctx.send('Tidak terhubung.')
+            return await ctx.send('Not connected.', ephemeral=True)
         await self.cleanup(ctx.guild)
-        await ctx.send(embed=discord.Embed(description='Berhenti', color=0xFFC0CB))
+        await ctx.send('Stopped.', ephemeral=True)
 
     @commands.hybrid_command(name='pause')
     async def pause_(self, ctx):
-        """Menjeda musik."""
+        """Pauses the music."""
         await ctx.defer(ephemeral=True)
         if not await self._ensure_node(ctx): return
         vc = ctx.voice_client
         if not vc or not isinstance(vc, wavelink.Player):
-            return await ctx.send('Tidak terhubung.', ephemeral=True)
+            return await ctx.send('Not connected.', ephemeral=True)
         if vc.playing:
             await vc.pause(True)
             player = await self.get_player(ctx)
@@ -448,18 +447,18 @@ class Music(commands.Cog):
                 view = player.np.view
                 if view: view.update_buttons(vc)
                 await player.np.edit(embed=player.create_embed(vc), view=view)
-            await ctx.send('Jeda.', ephemeral=True)
+            await ctx.send('Paused.', ephemeral=True)
         else:
-            await ctx.send('Tidak ada yang sedang diputar.', ephemeral=True)
+            await ctx.send('Nothing is playing.', ephemeral=True)
 
     @commands.hybrid_command(name='resume')
     async def resume_(self, ctx):
-        """Melanjutkan musik yang dijeda."""
+        """Resumes paused music."""
         await ctx.defer(ephemeral=True)
         if not await self._ensure_node(ctx): return
         vc = ctx.voice_client
         if not vc or not isinstance(vc, wavelink.Player):
-            return await ctx.send('Tidak terhubung.', ephemeral=True)
+            return await ctx.send('Not connected.', ephemeral=True)
         if vc.paused:
             await vc.pause(False)
             player = await self.get_player(ctx)
@@ -467,32 +466,32 @@ class Music(commands.Cog):
                 view = player.np.view
                 if view: view.update_buttons(vc)
                 await player.np.edit(embed=player.create_embed(vc), view=view)
-            await ctx.send('Dilanjutkan.', ephemeral=True)
+            await ctx.send('Resumed.', ephemeral=True)
         else:
-            await ctx.send('Tidak sedang dijeda.', ephemeral=True)
+            await ctx.send('Not paused.', ephemeral=True)
 
     @commands.hybrid_command(name='queue', aliases=['q'])
     async def queue_info(self, ctx):
-        """Menampilkan antrean lagu saat ini."""
+        """Shows current queue."""
         player = await self.get_player(ctx)
         if player.queue.empty():
-            return await ctx.send('Antrean kosong.')
+            return await ctx.send('Queue is empty.')
         upcoming = list(itertools.islice(player.queue._queue, 0, 10))
         fmt = '\n'.join(
             f"**{i+1}.** {item.title}" for i, item in enumerate(upcoming)
         )
-        await ctx.send(embed=discord.Embed(title='Antrean', description=fmt, color=0xFFC0CB))
+        await ctx.send(embed=discord.Embed(title='Queue', description=fmt, color=0xFFC0CB))
 
     @commands.hybrid_command(name='volume', aliases=['vol'])
     async def change_volume(self, ctx, vol: int):
-        """Mengubah volume bot (1-100)."""
+        """Sets bot volume (1-100)."""
         await ctx.defer(ephemeral=True)
         if not await self._ensure_node(ctx): return
         vc = ctx.voice_client
         if not vc or not isinstance(vc, wavelink.Player):
-            return await ctx.send('Tidak terhubung.', ephemeral=True)
+            return await ctx.send('Not connected.', ephemeral=True)
         if not 0 < vol <= 100:
-            return await ctx.send('Volume tidak valid (1-100).', ephemeral=True)
+            return await ctx.send('Invalid volume (1-100).', ephemeral=True)
         await vc.set_volume(vol)
         self.volumes[ctx.guild.id] = vol
         player = await self.get_player(ctx)
@@ -516,29 +515,29 @@ class Music(commands.Cog):
 
     @commands.hybrid_command(name='help')
     async def help_(self, ctx):
-        """Menampilkan semua perintah."""
+        """Shows all commands."""
         cmds = [
-            ('play <kueri>', 'Cari & putar dari YouTube / SoundCloud melalui Lavalink'),
-            ('skip', 'Melewati lagu saat ini'),
-            ('stop', 'Menghentikan pemutaran dan memutuskan koneksi'),
-            ('pause', 'Menjeda pemutaran'),
-            ('resume', 'Melanjutkan pemutaran'),
-            ('volume <1-100>', 'Mengatur volume'),
-            ('queue', 'Menampilkan antrean lagu'),
-            ('nowplaying', 'Menampilkan info trek saat ini'),
-            ('clear-queue', 'Menghapus semua lagu yang antre'),
-            ('shuffle', 'Mengacak antrean'),
-            ('loop', 'Beralih mode pengulangan'),
-            ('ping', 'Memeriksa latensi bot'),
+            ('play <query>', 'Search & play from YouTube / SoundCloud'),
+            ('skip', 'Skip current song'),
+            ('stop', 'Stop and disconnect'),
+            ('pause', 'Pause playback'),
+            ('resume', 'Resume playback'),
+            ('volume <1-100>', 'Set volume'),
+            ('queue', 'Show current queue'),
+            ('nowplaying', 'Show current track info'),
+            ('clear-queue', 'Clear all queued tracks'),
+            ('shuffle', 'Shuffle the queue'),
+            ('loop', 'Toggle loop mode'),
+            ('ping', 'Check bot latency'),
         ]
         embed = discord.Embed(title='Cachy Music', color=0xFFC0CB)
         embed.description = '\n\n'.join(f'**cachy {cmd}**\n{desc}' for cmd, desc in cmds)
-        embed.set_footer(text='Didukung oleh Lavalink | YouTube + SoundCloud')
+        embed.set_footer(text='Powered by Lavalink | YouTube + SoundCloud')
         await ctx.send(embed=embed)
 
     @commands.hybrid_command(name='ping')
     async def ping_(self, ctx):
-        """Memeriksa latensi bot."""
+        """Checks bot latency."""
         await ctx.send(embed=discord.Embed(
             description=f'Pong! {round(self.bot.latency * 1000)}ms',
             color=0xFFC0CB,
@@ -546,18 +545,18 @@ class Music(commands.Cog):
 
     @commands.hybrid_command(name='clear-queue')
     async def clear_queue_(self, ctx):
-        """Menghapus semua lagu dari antrean."""
+        """Clears all songs from the queue."""
         player = await self.get_player(ctx)
         while not player.queue.empty():
             try:
                 player.queue.get_nowait()
             except Exception:
                 break
-        await ctx.send(embed=discord.Embed(description='Antrean dikosongkan', color=0xFFC0CB))
+        await ctx.send(embed=discord.Embed(description='Queue cleared', color=0xFFC0CB))
 
     @commands.hybrid_command(name='loop')
     async def loop_(self, ctx):
-        """Beralih pengulangan lagu saat ini."""
+        """Toggles looping of current song."""
         player = await self.get_player(ctx)
         player.loop = not player.loop
         vc = ctx.voice_client
@@ -569,10 +568,10 @@ class Music(commands.Cog):
 
     @commands.hybrid_command(name='shuffle')
     async def shuffle_(self, ctx):
-        """Mengacak lagu-lagu di antrean."""
+        """Shuffles the queue."""
         player = await self.get_player(ctx)
         if player.queue.empty():
-            return await ctx.send('Antrean kosong.')
+            return await ctx.send('Queue is empty.')
         songs = []
         while not player.queue.empty():
             try:
@@ -582,7 +581,7 @@ class Music(commands.Cog):
         random.shuffle(songs)
         for song in songs:
             await player.queue.put(song)
-        await ctx.send(embed=discord.Embed(description='Diacak', color=0xFFC0CB))
+        await ctx.send(embed=discord.Embed(description='Shuffled', color=0xFFC0CB))
 
 
 async def setup(bot):
