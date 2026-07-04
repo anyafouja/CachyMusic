@@ -4,7 +4,7 @@ import random
 import itertools
 from discord.ext import commands
 import wavelink
-from .image_gen import generate_now_playing_image
+from .image_gen import generate_progress_bar_image
 
 
 class MusicPlayer:
@@ -37,25 +37,29 @@ class MusicPlayer:
         if not track:
             return None, None
 
-        requester_name = "Unknown"
-        if hasattr(track, 'requester'):
-            requester_name = track.requester.display_name
+        embed = discord.Embed(color=0xffc0cb)
+        embed.set_author(name="Now playing")
 
-        vc_name = "Unknown"
-        if vc.channel:
-            vc_name = vc.channel.name
-
+        req_mention = track.requester.mention if hasattr(track, 'requester') else "Unknown"
+        vc_name = vc.channel.name if vc.channel else "Unknown"
         loop_status = "On" if self.loop else "Off"
 
-        buffer = await generate_now_playing_image(
-            track.title, track.author, requester_name, vc_name,
-            self.queue.qsize(), self.volume, loop_status,
-            vc.position, track.length
-        )
+        # Metadata exactly like the reference image
+        description = f"**[{track.title[:100]}]({track.uri})**\n"
+        description += f"  - Added by: {req_mention}\n"
+        description += f"  - Channel: {vc_name}\n\n"
+        description += f"Queue: {self.queue.qsize()} - Volume: {self.volume}% - Loop: {loop_status}\n"
 
-        file = discord.File(buffer, filename="now_playing.png")
-        embed = discord.Embed(color=0xffc0cb)
-        embed.set_image(url="attachment://now_playing.png")
+        # Real graphical progress bar
+        buffer = await generate_progress_bar_image(vc.position, track.length)
+        file = discord.File(buffer, filename="progress.png")
+        embed.set_image(url="attachment://progress.png")
+
+        pos_str = _format_duration(vc.position)
+        dur_str = _format_duration(track.length)
+        description += f"\n`{pos_str}`" + (" " * 40) + f"`{dur_str}`"
+
+        embed.description = description
 
         return embed, file
 
@@ -166,13 +170,12 @@ class NowPlayingView(discord.ui.View):
     def update_buttons(self, vc: wavelink.Player):
         for child in self.children:
             if isinstance(child, discord.ui.Button):
-                if child.label in ['Pause', 'Resume']:
-                    child.label = 'Resume' if vc.paused else 'Pause'
-                if child.label == 'Loop':
-                    # Pink-ish style using Primary (blurple) is avoided, using Success (green) or Secondary (gray)
+                if child.label in ['\u23F8', '\u25B6']:
+                    child.label = '\u25B6' if vc.paused else '\u23F8'
+                if child.label == '\uD83D\uDD04':
                     child.style = discord.ButtonStyle.success if self.player.loop else discord.ButtonStyle.secondary
 
-    @discord.ui.button(label='Previous', style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label='\u23EE', style=discord.ButtonStyle.secondary)
     async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
         player = self.player
         if not player.current:
@@ -186,7 +189,7 @@ class NowPlayingView(discord.ui.View):
             await vc.stop()
         await interaction.response.defer()
 
-    @discord.ui.button(label='Pause', style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label='\u23F8', style=discord.ButtonStyle.secondary)
     async def pause_play(self, interaction: discord.Interaction, button: discord.ui.Button):
         vc = interaction.guild.voice_client
         if not vc or not isinstance(vc, wavelink.Player):
@@ -202,7 +205,7 @@ class NowPlayingView(discord.ui.View):
         embed, file = await self.player.create_embed_data(vc)
         await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
 
-    @discord.ui.button(label='Skip', style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label='\u23ED', style=discord.ButtonStyle.secondary)
     async def next_(self, interaction: discord.Interaction, button: discord.ui.Button):
         player = self.player
         if not player.current:
@@ -213,7 +216,7 @@ class NowPlayingView(discord.ui.View):
             await vc.stop()
         await interaction.response.defer()
 
-    @discord.ui.button(label='Loop', style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label='\uD83D\uDD04', style=discord.ButtonStyle.secondary)
     async def loop_(self, interaction: discord.Interaction, button: discord.ui.Button):
         player = self.player
         player.loop = not player.loop
@@ -223,7 +226,7 @@ class NowPlayingView(discord.ui.View):
         embed, file = await self.player.create_embed_data(vc)
         await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
 
-    @discord.ui.button(label='Stop', style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label='\u23F9', style=discord.ButtonStyle.secondary)
     async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.player._cog.cleanup(interaction.guild)
         await interaction.response.send_message('Stopped.', ephemeral=True)
