@@ -4,6 +4,7 @@ import random
 import itertools
 from discord.ext import commands
 import wavelink
+from .image_gen import generate_now_playing_image
 
 
 class MusicPlayer:
@@ -31,57 +32,32 @@ class MusicPlayer:
 
         self._task = asyncio.create_task(self.player_loop())
 
-    def create_embed(self, vc: wavelink.Player):
+    async def create_embed_data(self, vc: wavelink.Player):
         track = self.current
         if not track:
-            return None
+            return None, None
 
-        # Pink color 0xFFC0CB
-        embed = discord.Embed(color=0xffc0cb)
-        embed.set_author(name="Now playing")
-
-        requester_mention = "Unknown"
+        requester_name = "Unknown"
         if hasattr(track, 'requester'):
-            requester_mention = track.requester.mention
+            requester_name = track.requester.display_name
 
-        # Title as link (bold)
-        description = f"**[{track.title[:100]}]({track.uri})**\n"
-        description += f"  - Added by: {requester_mention}\n"
-
-        voice_channel = "Unknown"
+        vc_name = "Unknown"
         if vc.channel:
-            voice_channel = vc.channel.name
-        description += f"  - Channel: {voice_channel}\n\n"
+            vc_name = vc.channel.name
 
-        # Stats line (ASCII separators only)
-        queue_size = self.queue.qsize()
         loop_status = "On" if self.loop else "Off"
-        description += f"Queue Size: {queue_size} - Volume: {self.volume}% - Loop: {loop_status}\n\n"
 
-        # ASCII Progress Bar (Strictly no Unicode)
-        pos_ms = vc.position
-        dur_ms = track.length
-        bar_size = 20
+        buffer = await generate_now_playing_image(
+            track.title, track.author, requester_name, vc_name,
+            self.queue.qsize(), self.volume, loop_status,
+            vc.position, track.length
+        )
 
-        if dur_ms > 0:
-            progress = min(pos_ms / dur_ms, 1.0)
-            filled = int(progress * bar_size)
-            bar = "=" * filled + "o" + "-" * (bar_size - filled)
-        else:
-            bar = "o" + "-" * bar_size
+        file = discord.File(buffer, filename="now_playing.png")
+        embed = discord.Embed(color=0xffc0cb)
+        embed.set_image(url="attachment://now_playing.png")
 
-        pos_str = _format_duration(pos_ms)
-        dur_str = _format_duration(dur_ms)
-
-        # Layout matching reference image
-        description += f"[{bar}]\n{pos_str} / {dur_str}"
-
-        embed.description = description
-
-        if track.artwork:
-            embed.set_thumbnail(url=track.artwork)
-
-        return embed
+        return embed, file
 
     async def player_loop(self):
         await self.bot.wait_until_ready()
@@ -95,7 +71,7 @@ class MusicPlayer:
                     elif self.loop and self.current:
                         item = self.current
                     else:
-                        # Tunggu lagu baru atau timeout setelah 3 menit (180 detik) ketidakaktifan
+                        # Wait for a new track or timeout after 3 minutes (180s) of inactivity
                         item = await asyncio.wait_for(self.queue.get(), timeout=180)
                 except (asyncio.TimeoutError, asyncio.CancelledError):
                     await self._cog.cleanup(self._guild)
@@ -117,13 +93,13 @@ class MusicPlayer:
 
                 view = NowPlayingView(self, self._guild.id)
                 try:
-                    embed = self.create_embed(vc)
+                    embed, file = await self.create_embed_data(vc)
                     if self.np:
                         try:
                             await self.np.delete()
                         except Exception:
                             pass
-                    self.np = await self._channel.send(embed=embed, view=view)
+                    self.np = await self._channel.send(embed=embed, file=file, view=view)
                 except Exception:
                     pass
 
@@ -137,8 +113,8 @@ class MusicPlayer:
                         if count % 5 == 0 and self.np:
                             try:
                                 view.update_buttons(vc)
-                                embed = self.create_embed(vc)
-                                await self.np.edit(embed=embed, view=view)
+                                embed, file = await self.create_embed_data(vc)
+                                await self.np.edit(embed=embed, attachments=[file], view=view)
                             except Exception:
                                 pass
 
@@ -158,7 +134,7 @@ class MusicPlayer:
                 if not self.loop:
                     self.current = None
 
-                # Langsung putus koneksi jika antrean kosong setelah lagu selesai
+                # Disconnect immediately if the queue is empty after a track ends
                 if not self.loop and self.queue.empty() and not self._next_up:
                     await self._cog.cleanup(self._guild)
                     return
@@ -187,7 +163,7 @@ class NowPlayingView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(label='<<', style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label='Previous', style=discord.ButtonStyle.secondary)
     async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
         player = self.player
         if not player.current:
@@ -201,7 +177,7 @@ class NowPlayingView(discord.ui.View):
             await vc.stop()
         await interaction.response.defer()
 
-    @discord.ui.button(label='||', style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label='Pause', style=discord.ButtonStyle.secondary)
     async def pause_play(self, interaction: discord.Interaction, button: discord.ui.Button):
         vc = interaction.guild.voice_client
         if not vc or not isinstance(vc, wavelink.Player):
@@ -214,18 +190,48 @@ class NowPlayingView(discord.ui.View):
             return await interaction.response.send_message('Nothing is playing.', ephemeral=True)
 
         self.update_buttons(vc)
-        embed = self.player.create_embed(vc)
-        await interaction.response.edit_message(embed=embed, view=self)
+        embed, file = await self.player.create_embed_data(vc)
+        await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
 
     def update_buttons(self, vc: wavelink.Player):
         for child in self.children:
             if isinstance(child, discord.ui.Button):
-                if child.label in ['||', '>']:
-                    child.label = '>' if vc.paused else '||'
-                if child.label == 'L':
+                if child.label in ['Pause', 'Resume']:
+                    child.label = 'Resume' if vc.paused else 'Pause'
+                if child.label == 'Loop':
                     child.style = discord.ButtonStyle.primary if self.player.loop else discord.ButtonStyle.secondary
 
-    @discord.ui.button(label='>>', style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label='Previous', style=discord.ButtonStyle.secondary)
+    async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
+        player = self.player
+        if not player.current:
+            return await interaction.response.send_message('Nothing is playing.', ephemeral=True)
+        if not player.history:
+            return await interaction.response.send_message('No previous tracks.', ephemeral=True)
+        player._next_up = player.history.pop()
+        player._stop = True
+        vc = interaction.guild.voice_client
+        if vc:
+            await vc.stop()
+        await interaction.response.defer()
+
+    @discord.ui.button(label='Pause', style=discord.ButtonStyle.secondary)
+    async def pause_play(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = interaction.guild.voice_client
+        if not vc or not isinstance(vc, wavelink.Player):
+            return await interaction.response.send_message('Not connected.', ephemeral=True)
+        if vc.paused:
+            await vc.pause(False)
+        elif vc.playing:
+            await vc.pause(True)
+        else:
+            return await interaction.response.send_message('Nothing is playing.', ephemeral=True)
+
+        self.update_buttons(vc)
+        embed, file = await self.player.create_embed_data(vc)
+        await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
+
+    @discord.ui.button(label='Skip', style=discord.ButtonStyle.secondary)
     async def next_(self, interaction: discord.Interaction, button: discord.ui.Button):
         player = self.player
         if not player.current:
@@ -236,17 +242,17 @@ class NowPlayingView(discord.ui.View):
             await vc.stop()
         await interaction.response.defer()
 
-    @discord.ui.button(label='L', style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label='Loop', style=discord.ButtonStyle.secondary)
     async def loop_(self, interaction: discord.Interaction, button: discord.ui.Button):
         player = self.player
         player.loop = not player.loop
 
         vc = interaction.guild.voice_client
         self.update_buttons(vc)
-        embed = self.player.create_embed(vc)
-        await interaction.response.edit_message(embed=embed, view=self)
+        embed, file = await self.player.create_embed_data(vc)
+        await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
 
-    @discord.ui.button(label='X', style=discord.ButtonStyle.danger)
+    @discord.ui.button(label='Stop', style=discord.ButtonStyle.danger)
     async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.player._cog.cleanup(interaction.guild)
         await interaction.response.send_message('Stopped.', ephemeral=True)
@@ -446,7 +452,8 @@ class Music(commands.Cog):
             if player.np:
                 view = player.np.view
                 if view: view.update_buttons(vc)
-                await player.np.edit(embed=player.create_embed(vc), view=view)
+                embed, file = await player.create_embed_data(vc)
+                await player.np.edit(embed=embed, attachments=[file], view=view)
             await ctx.send('Paused.', ephemeral=True)
         else:
             await ctx.send('Nothing is playing.', ephemeral=True)
@@ -465,7 +472,8 @@ class Music(commands.Cog):
             if player.np:
                 view = player.np.view
                 if view: view.update_buttons(vc)
-                await player.np.edit(embed=player.create_embed(vc), view=view)
+                embed, file = await player.create_embed_data(vc)
+                await player.np.edit(embed=embed, attachments=[file], view=view)
             await ctx.send('Resumed.', ephemeral=True)
         else:
             await ctx.send('Not paused.', ephemeral=True)
@@ -499,19 +507,20 @@ class Music(commands.Cog):
         if player.np:
             view = player.np.view
             if view: view.update_buttons(vc)
-            await player.np.edit(embed=player.create_embed(vc), view=view)
+            embed, file = await player.create_embed_data(vc)
+            await player.np.edit(embed=embed, attachments=[file], view=view)
         await ctx.send(f'Volume set to {vol}%.', ephemeral=True)
 
     @commands.hybrid_command(name='nowplaying', aliases=['np'])
     async def nowplaying_(self, ctx):
-        """Menampilkan trek yang sedang diputar."""
+        """Shows currently playing track."""
         vc = ctx.voice_client
         if not vc or not isinstance(vc, wavelink.Player) or not vc.playing:
-            return await ctx.send('Tidak ada yang sedang diputar.')
+            return await ctx.send('Nothing is playing.', ephemeral=True)
 
         player = await self.get_player(ctx)
-        embed = player.create_embed(vc)
-        await ctx.send(embed=embed)
+        embed, file = await player.create_embed_data(vc)
+        await ctx.send(embed=embed, file=file)
 
     @commands.hybrid_command(name='help')
     async def help_(self, ctx):
@@ -563,7 +572,8 @@ class Music(commands.Cog):
         if vc and player.np:
             view = player.np.view
             if view: view.update_buttons(vc)
-            await player.np.edit(embed=player.create_embed(vc), view=view)
+            embed, file = await player.create_embed_data(vc)
+            await player.np.edit(embed=embed, attachments=[file], view=view)
         await ctx.send(f'Loop {"On" if player.loop else "Off"}.', ephemeral=True)
 
     @commands.hybrid_command(name='shuffle')
