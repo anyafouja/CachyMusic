@@ -44,20 +44,16 @@ class MusicPlayer:
         vc_name = vc.channel.name if vc.channel else "Unknown"
         loop_status = "On" if self.loop else "Off"
 
-        # Metadata exactly like the reference image
+        # Metadata in English with ASCII bullets
         description = f"**[{track.title[:100]}]({track.uri})**\n"
         description += f"  - Added by: {req_mention}\n"
         description += f"  - Channel: {vc_name}\n\n"
-        description += f"Queue: {self.queue.qsize()} - Volume: {self.volume}% - Loop: {loop_status}\n"
+        description += f"Queue: {self.queue.qsize()} - Volume: {self.volume}% - Loop: {loop_status}"
 
-        # Real graphical progress bar
+        # Real graphical progress bar via Pillow PNG
         buffer = await generate_progress_bar_image(vc.position, track.length)
         file = discord.File(buffer, filename="progress.png")
         embed.set_image(url="attachment://progress.png")
-
-        pos_str = _format_duration(vc.position)
-        dur_str = _format_duration(track.length)
-        description += f"\n`{pos_str}`" + (" " * 40) + f"`{dur_str}`"
 
         embed.description = description
 
