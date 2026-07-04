@@ -36,38 +36,43 @@ class MusicPlayer:
         if not track:
             return None
 
-        embed = discord.Embed(color=0x7289da)
-        embed.set_author(name="Sedang diputar")
+        embed = discord.Embed(color=0x5865f2)
+        embed.set_author(name="Now playing")
 
-        requester = getattr(track, 'requester', 'Tidak diketahui')
+        requester_mention = "Tidak diketahui"
+        if hasattr(track, 'requester'):
+            requester_mention = track.requester.mention
 
-        # Konten utama dalam deskripsi agar menyerupai gambar
-        description = f"**[{track.title[:100]}]({track.uri})**\n\n"
-        description += f"• Diminta oleh: {requester}\n"
-        description += f"• Artis: {track.author or 'Tidak diketahui'}\n\n"
+        # Konten utama
+        description = f"**[{track.title[:100]}]({track.uri})**\n"
+        description += f"• Added by {requester_mention}\n"
+
+        voice_channel = "Unknown"
+        if vc.channel:
+            voice_channel = vc.channel.name
+        description += f"• 🔊 {voice_channel}\n\n"
 
         # Baris statistik
         queue_size = self.queue.qsize()
-        loop_status = "Aktif" if self.loop else "Nonaktif"
-        description += f"Ukuran Antrean: `{queue_size}` · Volume: `{self.volume}%` · Pengulangan: `{loop_status}`\n\n"
+        loop_status = "On" if self.loop else "Off"
+        description += f"Queue Size: `{queue_size}` · Volume: `{self.volume}%` · Loop: `{loop_status}`\n\n"
 
-        # Progress Bar ala Spotify
+        # Progress Bar
         pos_ms = vc.position
         dur_ms = track.length
-        bar_size = 20
+        bar_size = 25
 
         if dur_ms > 0:
             progress = min(pos_ms / dur_ms, 1.0)
             filled = int(progress * bar_size)
-            bar = "▬" * filled + "●" + "▬" * (bar_size - filled)
+            bar = "━" * filled + "🔘" + "━" * (bar_size - filled)
         else:
-            bar = "●" + "▬" * bar_size
+            bar = "🔘" + "━" * bar_size
 
         pos_str = _format_duration(pos_ms)
         dur_str = _format_duration(dur_ms)
 
-        # Menggunakan format code block satu baris untuk bar agar spasi lebih konsisten
-        description += f"`{bar}`\n`{pos_str}`" + (" " * 15) + f"`{dur_str}`"
+        description += f"{bar}\n`{pos_str}`" + (" " * 35) + f"`{dur_str}`"
 
         embed.description = description
 
@@ -180,7 +185,7 @@ class NowPlayingView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(label='Sebelumnya', style=discord.ButtonStyle.secondary)
+    @discord.ui.button(emoji='⏮️', style=discord.ButtonStyle.secondary)
     async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
         player = self.player
         if not player.current:
@@ -194,7 +199,7 @@ class NowPlayingView(discord.ui.View):
             await vc.stop()
         await interaction.response.defer()
 
-    @discord.ui.button(label='Jeda', style=discord.ButtonStyle.secondary)
+    @discord.ui.button(emoji='⏸️', style=discord.ButtonStyle.secondary)
     async def pause_play(self, interaction: discord.Interaction, button: discord.ui.Button):
         vc = interaction.guild.voice_client
         if not vc or not isinstance(vc, wavelink.Player):
@@ -214,12 +219,12 @@ class NowPlayingView(discord.ui.View):
         # Update Pause/Play button
         for child in self.children:
             if isinstance(child, discord.ui.Button):
-                if child.label in ['Jeda', 'Lanjutkan']:
-                    child.label = 'Lanjutkan' if vc.paused else 'Jeda'
-                if child.label == 'Ulangi':
+                if child.emoji and str(child.emoji) in ['⏸️', '▶️']:
+                    child.emoji = '▶️' if vc.paused else '⏸️'
+                if child.emoji and str(child.emoji) == '🔁':
                     child.style = discord.ButtonStyle.primary if self.player.loop else discord.ButtonStyle.secondary
 
-    @discord.ui.button(label='Lewati', style=discord.ButtonStyle.secondary)
+    @discord.ui.button(emoji='⏭️', style=discord.ButtonStyle.secondary)
     async def next_(self, interaction: discord.Interaction, button: discord.ui.Button):
         player = self.player
         if not player.current:
@@ -230,7 +235,7 @@ class NowPlayingView(discord.ui.View):
             await vc.stop()
         await interaction.response.defer()
 
-    @discord.ui.button(label='Ulangi', style=discord.ButtonStyle.secondary)
+    @discord.ui.button(emoji='🔁', style=discord.ButtonStyle.secondary)
     async def loop_(self, interaction: discord.Interaction, button: discord.ui.Button):
         player = self.player
         player.loop = not player.loop
@@ -240,7 +245,7 @@ class NowPlayingView(discord.ui.View):
         embed = self.player.create_embed(vc)
         await interaction.response.edit_message(embed=embed, view=self)
 
-    @discord.ui.button(label='Berhenti', style=discord.ButtonStyle.danger)
+    @discord.ui.button(emoji='⏹️', style=discord.ButtonStyle.danger)
     async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.player._cog.cleanup(interaction.guild)
         await interaction.response.send_message('Berhenti dan keluar.', ephemeral=True)
@@ -431,11 +436,11 @@ class Music(commands.Cog):
     @commands.hybrid_command(name='pause')
     async def pause_(self, ctx):
         """Menjeda musik."""
-        await ctx.defer()
+        await ctx.defer(ephemeral=True)
         if not await self._ensure_node(ctx): return
         vc = ctx.voice_client
         if not vc or not isinstance(vc, wavelink.Player):
-            return await ctx.send('Tidak terhubung ke Lavalink.')
+            return await ctx.send('Tidak terhubung.', ephemeral=True)
         if vc.playing:
             await vc.pause(True)
             player = await self.get_player(ctx)
@@ -443,18 +448,18 @@ class Music(commands.Cog):
                 view = player.np.view
                 if view: view.update_buttons(vc)
                 await player.np.edit(embed=player.create_embed(vc), view=view)
-            await ctx.send(embed=discord.Embed(description='Jeda', color=0xFFC0CB), delete_after=5)
+            await ctx.send('Jeda.', ephemeral=True)
         else:
-            await ctx.send('Tidak ada yang sedang diputar.')
+            await ctx.send('Tidak ada yang sedang diputar.', ephemeral=True)
 
     @commands.hybrid_command(name='resume')
     async def resume_(self, ctx):
         """Melanjutkan musik yang dijeda."""
-        await ctx.defer()
+        await ctx.defer(ephemeral=True)
         if not await self._ensure_node(ctx): return
         vc = ctx.voice_client
         if not vc or not isinstance(vc, wavelink.Player):
-            return await ctx.send('Tidak terhubung.')
+            return await ctx.send('Tidak terhubung.', ephemeral=True)
         if vc.paused:
             await vc.pause(False)
             player = await self.get_player(ctx)
@@ -462,9 +467,9 @@ class Music(commands.Cog):
                 view = player.np.view
                 if view: view.update_buttons(vc)
                 await player.np.edit(embed=player.create_embed(vc), view=view)
-            await ctx.send(embed=discord.Embed(description='Dilanjutkan', color=0xFFC0CB), delete_after=5)
+            await ctx.send('Dilanjutkan.', ephemeral=True)
         else:
-            await ctx.send('Tidak sedang dijeda.')
+            await ctx.send('Tidak sedang dijeda.', ephemeral=True)
 
     @commands.hybrid_command(name='queue', aliases=['q'])
     async def queue_info(self, ctx):
@@ -481,13 +486,13 @@ class Music(commands.Cog):
     @commands.hybrid_command(name='volume', aliases=['vol'])
     async def change_volume(self, ctx, vol: int):
         """Mengubah volume bot (1-100)."""
-        await ctx.defer()
+        await ctx.defer(ephemeral=True)
         if not await self._ensure_node(ctx): return
         vc = ctx.voice_client
         if not vc or not isinstance(vc, wavelink.Player):
-            return await ctx.send('Tidak terhubung.')
+            return await ctx.send('Tidak terhubung.', ephemeral=True)
         if not 0 < vol <= 100:
-            return await ctx.send('Volume tidak valid (1-100).')
+            return await ctx.send('Volume tidak valid (1-100).', ephemeral=True)
         await vc.set_volume(vol)
         self.volumes[ctx.guild.id] = vol
         player = await self.get_player(ctx)
@@ -496,7 +501,7 @@ class Music(commands.Cog):
             view = player.np.view
             if view: view.update_buttons(vc)
             await player.np.edit(embed=player.create_embed(vc), view=view)
-        await ctx.send(embed=discord.Embed(description=f'Volume: {vol}%', color=0xFFC0CB), delete_after=5)
+        await ctx.send(f'Volume set to {vol}%.', ephemeral=True)
 
     @commands.hybrid_command(name='nowplaying', aliases=['np'])
     async def nowplaying_(self, ctx):
@@ -560,10 +565,7 @@ class Music(commands.Cog):
             view = player.np.view
             if view: view.update_buttons(vc)
             await player.np.edit(embed=player.create_embed(vc), view=view)
-        await ctx.send(embed=discord.Embed(
-            description=f'Pengulangan {"aktif" if player.loop else "nonaktif"}',
-            color=0xFFC0CB,
-        ), delete_after=5)
+        await ctx.send(f'Loop {"On" if player.loop else "Off"}.', ephemeral=True)
 
     @commands.hybrid_command(name='shuffle')
     async def shuffle_(self, ctx):
