@@ -163,43 +163,14 @@ class NowPlayingView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(label='Previous', style=discord.ButtonStyle.secondary)
-    async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
-        player = self.player
-        if not player.current:
-            return await interaction.response.send_message('Nothing is playing.', ephemeral=True)
-        if not player.history:
-            return await interaction.response.send_message('No previous tracks.', ephemeral=True)
-        player._next_up = player.history.pop()
-        player._stop = True
-        vc = interaction.guild.voice_client
-        if vc:
-            await vc.stop()
-        await interaction.response.defer()
-
-    @discord.ui.button(label='Pause', style=discord.ButtonStyle.secondary)
-    async def pause_play(self, interaction: discord.Interaction, button: discord.ui.Button):
-        vc = interaction.guild.voice_client
-        if not vc or not isinstance(vc, wavelink.Player):
-            return await interaction.response.send_message('Not connected.', ephemeral=True)
-        if vc.paused:
-            await vc.pause(False)
-        elif vc.playing:
-            await vc.pause(True)
-        else:
-            return await interaction.response.send_message('Nothing is playing.', ephemeral=True)
-
-        self.update_buttons(vc)
-        embed, file = await self.player.create_embed_data(vc)
-        await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
-
     def update_buttons(self, vc: wavelink.Player):
         for child in self.children:
             if isinstance(child, discord.ui.Button):
                 if child.label in ['Pause', 'Resume']:
                     child.label = 'Resume' if vc.paused else 'Pause'
                 if child.label == 'Loop':
-                    child.style = discord.ButtonStyle.primary if self.player.loop else discord.ButtonStyle.secondary
+                    # Pink-ish style using Primary (blurple) is avoided, using Success (green) or Secondary (gray)
+                    child.style = discord.ButtonStyle.success if self.player.loop else discord.ButtonStyle.secondary
 
     @discord.ui.button(label='Previous', style=discord.ButtonStyle.secondary)
     async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -252,7 +223,7 @@ class NowPlayingView(discord.ui.View):
         embed, file = await self.player.create_embed_data(vc)
         await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
 
-    @discord.ui.button(label='Stop', style=discord.ButtonStyle.danger)
+    @discord.ui.button(label='Stop', style=discord.ButtonStyle.secondary)
     async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.player._cog.cleanup(interaction.guild)
         await interaction.response.send_message('Stopped.', ephemeral=True)
