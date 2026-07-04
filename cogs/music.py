@@ -36,28 +36,43 @@ class MusicPlayer:
         if not track:
             return None
 
-        embed = discord.Embed(title=track.title[:256], url=track.uri, color=0xFFC0CB)
-        if track.artwork:
-            embed.set_thumbnail(url=track.artwork)
-
-        embed.add_field(name="Oleh", value=track.author or "Tidak diketahui", inline=True)
+        embed = discord.Embed(color=0x7289da)
+        embed.set_author(name="Sedang diputar")
 
         requester = getattr(track, 'requester', 'Tidak diketahui')
-        embed.add_field(name="Diminta oleh", value=str(requester), inline=True)
 
-        pos = _format_duration(vc.position)
-        dur = _format_duration(track.length)
-        bar = _create_progress_bar(vc.position, track.length)
+        # Konten utama dalam deskripsi agar menyerupai gambar
+        description = f"**[{track.title[:100]}]({track.uri})**\n\n"
+        description += f"• Diminta oleh: {requester}\n"
+        description += f"• Artis: {track.author or 'Tidak diketahui'}\n\n"
 
-        embed.add_field(name="Progress", value=f"`{pos} / {dur}`\n`{bar}`", inline=False)
-
+        # Baris statistik
+        queue_size = self.queue.qsize()
         loop_status = "Aktif" if self.loop else "Nonaktif"
-        embed.add_field(name="Volume", value=f"{self.volume}%", inline=True)
-        embed.add_field(name="Pengulangan", value=loop_status, inline=True)
+        description += f"Ukuran Antrean: `{queue_size}` · Volume: `{self.volume}%` · Pengulangan: `{loop_status}`\n\n"
 
-        if not self.queue.empty():
-            upcoming = list(itertools.islice(self.queue._queue, 0, 1))
-            embed.add_field(name="Berikutnya", value=upcoming[0].title[:100], inline=False)
+        # Progress Bar ala Spotify
+        pos_ms = vc.position
+        dur_ms = track.length
+        bar_size = 20
+
+        if dur_ms > 0:
+            progress = min(pos_ms / dur_ms, 1.0)
+            filled = int(progress * bar_size)
+            bar = "▬" * filled + "●" + "▬" * (bar_size - filled)
+        else:
+            bar = "●" + "▬" * bar_size
+
+        pos_str = _format_duration(pos_ms)
+        dur_str = _format_duration(dur_ms)
+
+        # Menggunakan format code block satu baris untuk bar agar spasi lebih konsisten
+        description += f"`{bar}`\n`{pos_str}`" + (" " * 15) + f"`{dur_str}`"
+
+        embed.description = description
+
+        if track.artwork:
+            embed.set_thumbnail(url=track.artwork)
 
         return embed
 
@@ -165,7 +180,7 @@ class NowPlayingView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(label='[ << ]', style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label='Sebelumnya', style=discord.ButtonStyle.secondary)
     async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
         player = self.player
         if not player.current:
@@ -179,7 +194,7 @@ class NowPlayingView(discord.ui.View):
             await vc.stop()
         await interaction.response.defer()
 
-    @discord.ui.button(label='[ || ]', style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label='Jeda', style=discord.ButtonStyle.secondary)
     async def pause_play(self, interaction: discord.Interaction, button: discord.ui.Button):
         vc = interaction.guild.voice_client
         if not vc or not isinstance(vc, wavelink.Player):
@@ -198,12 +213,13 @@ class NowPlayingView(discord.ui.View):
     def update_buttons(self, vc: wavelink.Player):
         # Update Pause/Play button
         for child in self.children:
-            if isinstance(child, discord.ui.Button) and child.label in ['[ || ]', '[ > ]']:
-                child.label = '[ > ]' if vc.paused else '[ || ]'
-            if isinstance(child, discord.ui.Button) and child.label == '[ Loop ]':
-                child.style = discord.ButtonStyle.primary if self.player.loop else discord.ButtonStyle.secondary
+            if isinstance(child, discord.ui.Button):
+                if child.label in ['Jeda', 'Lanjutkan']:
+                    child.label = 'Lanjutkan' if vc.paused else 'Jeda'
+                if child.label == 'Ulangi':
+                    child.style = discord.ButtonStyle.primary if self.player.loop else discord.ButtonStyle.secondary
 
-    @discord.ui.button(label='[ >> ]', style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label='Lewati', style=discord.ButtonStyle.secondary)
     async def next_(self, interaction: discord.Interaction, button: discord.ui.Button):
         player = self.player
         if not player.current:
@@ -214,7 +230,7 @@ class NowPlayingView(discord.ui.View):
             await vc.stop()
         await interaction.response.defer()
 
-    @discord.ui.button(label='[ Loop ]', style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label='Ulangi', style=discord.ButtonStyle.secondary)
     async def loop_(self, interaction: discord.Interaction, button: discord.ui.Button):
         player = self.player
         player.loop = not player.loop
@@ -224,7 +240,7 @@ class NowPlayingView(discord.ui.View):
         embed = self.player.create_embed(vc)
         await interaction.response.edit_message(embed=embed, view=self)
 
-    @discord.ui.button(label='[ Stop ]', style=discord.ButtonStyle.danger)
+    @discord.ui.button(label='Berhenti', style=discord.ButtonStyle.danger)
     async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.player._cog.cleanup(interaction.guild)
         await interaction.response.send_message('Berhenti dan keluar.', ephemeral=True)
@@ -237,16 +253,6 @@ def _format_duration(ms: int) -> str:
     if hours:
         return f'{hours:02}:{minutes:02}:{sec:02}'
     return f'{minutes:02}:{sec:02}'
-
-
-def _create_progress_bar(current: int, total: int, size: int = 15) -> str:
-    if total <= 0:
-        return f"[{'-' * size}]"
-    progress = min(current / total, 1.0)
-    filled = int(progress * size)
-    bar = '=' * filled + '-' * (size - filled)
-    percentage = int(progress * 100)
-    return f"[{bar}] {percentage}%"
 
 
 class Music(commands.Cog):
