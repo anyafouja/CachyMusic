@@ -7,8 +7,9 @@ import wavelink
 
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
-LAVALINK_URI = os.getenv('LAVALINK_URI', 'lavalink.triniumhost.com:4333')
-LAVALINK_PASSWORD = os.getenv('LAVALINK_PASSWORD', 'free')
+LAVALINK_URI = os.getenv('LAVALINK_URI', 'lavalink.jirayu.net:13592')
+LAVALINK_PASSWORD = os.getenv('LAVALINK_PASSWORD', 'youshallnotpass')
+LAVALINK_SECURE = os.getenv('LAVALINK_SECURE', 'false').lower() == 'true'
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -31,7 +32,8 @@ class CachyBot(commands.Bot):
 
     async def _connect_lavalink(self):
         """Fire-and-forget connect. on_wavelink_node_ready sets the event."""
-        node = wavelink.Node(uri=f"ws://{LAVALINK_URI}", password=LAVALINK_PASSWORD)
+        uri_scheme = "wss://" if LAVALINK_SECURE else "ws://"
+        node = wavelink.Node(uri=f"{uri_scheme}{LAVALINK_URI}", password=LAVALINK_PASSWORD)
         for i in range(3):
             try:
                 await asyncio.wait_for(
