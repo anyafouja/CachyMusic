@@ -7,9 +7,9 @@ import wavelink
 
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
-LAVALINK_URI = os.getenv('LAVALINK_URI', 'lavalink.jirayu.net:13592')
-LAVALINK_PASSWORD = os.getenv('LAVALINK_PASSWORD', 'youshallnotpass')
-LAVALINK_SECURE = os.getenv('LAVALINK_SECURE', 'false').lower() == 'true'
+LAVALINK_URI = os.getenv('LAVALINK_URI', 'lavalink-v4.triniumhost.com:443')
+LAVALINK_PASSWORD = os.getenv('LAVALINK_PASSWORD', 'free')
+LAVALINK_SECURE = os.getenv('LAVALINK_SECURE', 'true').lower() == 'true'
 
 intents = discord.Intents.default()
 intents.message_content = True

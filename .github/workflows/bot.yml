@@ -20,7 +20,7 @@ jobs:
       - run: pip install -q -r requirements.txt
       - run: |
           echo "DISCORD_TOKEN=${{ secrets.DISCORD_TOKEN }}" > .env
-          echo "LAVALINK_URI=${{ secrets.LAVALINK_URI || 'lavalink.jirayu.net:13592' }}" >> .env
-          echo "LAVALINK_PASSWORD=${{ secrets.LAVALINK_PASSWORD || 'youshallnotpass' }}" >> .env
-          echo "LAVALINK_SECURE=${{ secrets.LAVALINK_SECURE || 'false' }}" >> .env
+          echo "LAVALINK_URI=${{ secrets.LAVALINK_URI || 'lavalink-v4.triniumhost.com:443' }}" >> .env
+          echo "LAVALINK_PASSWORD=${{ secrets.LAVALINK_PASSWORD || 'free' }}" >> .env
+          echo "LAVALINK_SECURE=${{ secrets.LAVALINK_SECURE || 'true' }}" >> .env
       - run: python3 main.py

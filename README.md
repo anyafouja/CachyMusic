@@ -27,7 +27,7 @@ YouTube & SoundCloud via Lavalink public nodes (wavelink). Runs locally or on Gi
 3. Copy `.env.example` to `.env`, fill `DISCORD_TOKEN`
 4. `python main.py`
 
-Default Lavalink node: `lavalink.jirayu.net:13592` (password: `youshallnotpass`). Override via `LAVALINK_URI` / `LAVALINK_PASSWORD` env vars.
+Default Lavalink node: `lavalink-v4.triniumhost.com:443` (password: `free`). Override via `LAVALINK_URI` / `LAVALINK_PASSWORD` env vars.
 
 ### GitHub Actions
 
