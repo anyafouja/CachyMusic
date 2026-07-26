@@ -37,13 +37,9 @@ class CachyBot(commands.Bot):
         node = wavelink.Node(uri=f"{scheme}://{LAVALINK_URI}", password=LAVALINK_PASSWORD)
         for i in range(3):
             try:
-                if wavelink.Pool.nodes:
-                    try:
-                        await wavelink.Pool.close()
-                    except Exception:
-                        pass
-                await asyncio.wait_for(
-                    wavelink.Pool.connect(nodes=[node], client=self), timeout=20)
+                if not wavelink.Pool.nodes:
+                    await asyncio.wait_for(
+                        wavelink.Pool.connect(nodes=[node], client=self), timeout=20)
                 print(f"Lavalink connect sent: {scheme}://{LAVALINK_URI}")
                 return
             except asyncio.TimeoutError:
@@ -63,9 +59,11 @@ class CachyBot(commands.Bot):
             else:
                 self.lavalink_ready.clear()
 
-        # Try fresh connect if never succeeded or currently disconnected
-        if not self._connect_task or self._connect_task.done():
-            self._connect_task = asyncio.create_task(self._connect_lavalink())
+        # If we have no nodes registered at all in the pool, connect for the first time
+        if not wavelink.Pool.nodes:
+            if not self._connect_task or self._connect_task.done():
+                self._connect_task = asyncio.create_task(self._connect_lavalink())
+
         try:
             await asyncio.wait_for(self.lavalink_ready.wait(), timeout=60)
             return True
