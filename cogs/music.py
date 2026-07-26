@@ -12,7 +12,7 @@ class MusicPlayer:
         'bot', '_guild', '_channel', '_cog',
         'queue', 'current', 'np', 'volume',
         'loop', '_stop', '_next_up', 'history',
-        '_task',
+        '_task', 'next_event',
     )
 
     def __init__(self, ctx):
@@ -29,6 +29,7 @@ class MusicPlayer:
         self._stop = False
         self._next_up = None
         self.history = []
+        self.next_event = asyncio.Event()
 
         self._task = asyncio.create_task(self.player_loop())
 
@@ -86,6 +87,7 @@ class MusicPlayer:
                 self.current = track
 
                 try:
+                    self.next_event.clear()
                     await vc.play(track)
                 except Exception:
                     self.current = None
@@ -104,25 +106,26 @@ class MusicPlayer:
                     pass
 
                 try:
-                    count = 0
-                    while (vc.playing or vc.paused) and self._guild.voice_client:
-                        await asyncio.sleep(2)
-                        count += 1
-
-                        # Perbarui embed dan tombol setiap 10 detik (5 iterasi * 2 detik)
-                        if count % 5 == 0 and self.np:
-                            try:
-                                view.update_buttons(vc)
-                                embed, file = await self.create_embed_data(vc)
-                                await self.np.edit(embed=embed, attachments=[file], view=view)
-                            except Exception:
-                                pass
-
-                        if self._stop:
+                    # Wait for track to finish, update progress bar every 10 seconds
+                    while not self.next_event.is_set() and self._guild.voice_client and not self._stop:
+                        try:
+                            await asyncio.wait_for(self.next_event.wait(), timeout=10.0)
+                        except asyncio.TimeoutError:
+                            if self.np and not self._stop and self._guild.voice_client:
+                                try:
+                                    view.update_buttons(vc)
+                                    embed, file = await self.create_embed_data(vc)
+                                    await self.np.edit(embed=embed, attachments=[file], view=view)
+                                except Exception:
+                                    pass
+                        except Exception:
                             break
 
                     if self._stop:
-                        await vc.stop()
+                        try:
+                            await vc.stop()
+                        except Exception:
+                            pass
                 except Exception:
                     pass
 
@@ -251,6 +254,7 @@ class Music(commands.Cog):
 
         if player:
             player._stop = True
+            player.next_event.set()
             if player.np:
                 try:
                     await player.np.delete()
@@ -304,6 +308,56 @@ class Music(commands.Cog):
             vc = member.guild.voice_client
             if vc and vc.channel and len([m for m in vc.channel.members if not m.bot]) == 0:
                 await self.cleanup(member.guild)
+
+    @commands.Cog.listener()
+    async def on_wavelink_track_end(self, payload: wavelink.TrackEndEventPayload):
+        player = self.players.get(payload.player.guild.id)
+        if player:
+            player.next_event.set()
+
+    @commands.Cog.listener()
+    async def on_wavelink_track_exception(self, payload: wavelink.TrackExceptionEventPayload):
+        print(f"Track exception in guild {payload.player.guild.id}: {payload.exception}")
+        player = self.players.get(payload.player.guild.id)
+        if player:
+            try:
+                embed = discord.Embed(
+                    description=f"Playback error: {payload.exception.get('message', 'Unknown error')}",
+                    color=0xFFC0CB
+                )
+                await player._channel.send(embed=embed)
+            except Exception:
+                pass
+            player.next_event.set()
+
+    @commands.Cog.listener()
+    async def on_wavelink_track_stuck(self, payload: wavelink.TrackStuckEventPayload):
+        print(f"Track stuck in guild {payload.player.guild.id}")
+        player = self.players.get(payload.player.guild.id)
+        if player:
+            try:
+                embed = discord.Embed(
+                    description="Track got stuck. Skipping to next track.",
+                    color=0xFFC0CB
+                )
+                await player._channel.send(embed=embed)
+            except Exception:
+                pass
+            try:
+                await payload.player.stop()
+            except Exception:
+                pass
+            player.next_event.set()
+
+    @commands.Cog.listener()
+    async def on_wavelink_websocket_closed(self, payload: wavelink.WebsocketClosedEventPayload):
+        print(f"Lavalink WebSocket closed in guild {payload.player.guild.id}: code={payload.code}, reason={payload.reason}")
+        player = self.players.get(payload.player.guild.id)
+        if player:
+            if payload.code == 4014:
+                await self.cleanup(payload.player.guild)
+            else:
+                player.next_event.set()
 
     async def _ensure_voice(self, ctx) -> bool:
         vc = ctx.voice_client

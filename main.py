@@ -7,8 +7,10 @@ import wavelink
 
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
-LAVALINK_URI = os.getenv('LAVALINK_URI', 'lavalink.triniumhost.com:4333')
+LAVALINK_URI = os.getenv('LAVALINK_URI', 'lavalink-v4.triniumhost.com:443')
 LAVALINK_PASSWORD = os.getenv('LAVALINK_PASSWORD', 'free')
+LAVALINK_SECURE_ENV = os.getenv('LAVALINK_SECURE', 'true')
+LAVALINK_SECURE = LAVALINK_SECURE_ENV.lower() in ('true', '1', 'yes')
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -31,12 +33,14 @@ class CachyBot(commands.Bot):
 
     async def _connect_lavalink(self):
         """Fire-and-forget connect. on_wavelink_node_ready sets the event."""
-        node = wavelink.Node(uri=f"ws://{LAVALINK_URI}", password=LAVALINK_PASSWORD)
+        scheme = "wss" if LAVALINK_SECURE else "ws"
+        node = wavelink.Node(uri=f"{scheme}://{LAVALINK_URI}", password=LAVALINK_PASSWORD)
         for i in range(3):
             try:
-                await asyncio.wait_for(
-                    wavelink.Pool.connect(nodes=[node], client=self), timeout=20)
-                print(f"Lavalink connect sent: {LAVALINK_URI}")
+                if not wavelink.Pool.nodes:
+                    await asyncio.wait_for(
+                        wavelink.Pool.connect(nodes=[node], client=self), timeout=20)
+                print(f"Lavalink connect sent: {scheme}://{LAVALINK_URI}")
                 return
             except asyncio.TimeoutError:
                 print(f"Lavalink timeout ({i+1}/3)")
@@ -47,20 +51,24 @@ class CachyBot(commands.Bot):
 
     async def ensure_node(self):
         """Wait up to 60s for node to be CONNECTED."""
-        if self.lavalink_ready.is_set():
-            return True
+        if wavelink.Pool.nodes:
+            connected = any(node.status == wavelink.NodeStatus.CONNECTED for node in wavelink.Pool.nodes.values())
+            if connected:
+                self.lavalink_ready.set()
+                return True
+            else:
+                self.lavalink_ready.clear()
+
+        # If we have no nodes registered at all in the pool, connect for the first time
+        if not wavelink.Pool.nodes:
+            if not self._connect_task or self._connect_task.done():
+                self._connect_task = asyncio.create_task(self._connect_lavalink())
+
         try:
             await asyncio.wait_for(self.lavalink_ready.wait(), timeout=60)
             return True
         except asyncio.TimeoutError:
-            # Try fresh connect if never succeeded
-            if not self._connect_task or self._connect_task.done():
-                self._connect_task = asyncio.create_task(self._connect_lavalink())
-            try:
-                await asyncio.wait_for(self.lavalink_ready.wait(), timeout=30)
-                return True
-            except asyncio.TimeoutError:
-                return False
+            return False
 
 
 bot = CachyBot()
